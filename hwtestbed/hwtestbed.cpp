@@ -12,11 +12,6 @@ struct BufferInfo {
 	uint32_t size;
 };
 
-struct RequestExecuteCompute {
-	uint32_t threadgroups_per_grid[3];
-	uint32_t threads_per_threadgroup[3];
-};
-
 struct RequestHandler {
 	std::string err;
 	void* tmp = nullptr;
@@ -121,6 +116,12 @@ struct RequestHandler {
 		fwrite(&u8op, sizeof(u8op), 1, file);
 	}
 
+	void sendString(const std::string& str, FILE* file) {
+		uint32_t size = static_cast<uint32_t>(str.size() + 1);
+		fwrite(&size, sizeof(size), 1, file);
+		fwrite(str.c_str(), size, 1, file);
+	}
+
 	void run(FILE* in, FILE* out) {
 		while (true) {
 			uint8_t op;
@@ -195,24 +196,36 @@ struct RequestHandler {
 					return;
 				break;
 
+			case HW_TEST_BED_REQUEST_EXECUTE_COMPUTE_BENCH:
 			case HW_TEST_BED_REQUEST_EXECUTE_COMPUTE: {
-				RequestExecuteCompute req;
-				if (fread(&req, sizeof(req), 1, in) < 1)
+				uint32_t count = 1;
+				if (op == HW_TEST_BED_REQUEST_EXECUTE_COMPUTE_BENCH)
+					if (fread(&count, sizeof(count), 1, in) < 1)
+						return;
+				ensureSize(count * (sizeof(Runner::ComputeInput) + sizeof(Runner::ComputeOutput)));
+				Runner::ComputeInput* input = static_cast<Runner::ComputeInput*>(tmp);
+				Runner::ComputeOutput* output = reinterpret_cast<Runner::ComputeOutput*>(input + count);
+				if (fread(input, sizeof(*input) * count, 1, in) < 1)
 					return;
-				Runner::ComputeRun run;
+				memset(output, 0, sizeof(*output) * count);
+				Runner::ComputeRun run = {};
 				run.buffers = buffers;
 				run.num_buffers = MAX_BUFFERS;
 				run.shader = shader;
 				run.threadgroup_memory_size = tgsm;
-				memcpy(run.threads_per_threadgroup, req.threads_per_threadgroup, sizeof(req.threads_per_threadgroup));
-				memcpy(run.threadgroups_per_grid, req.threadgroups_per_grid, sizeof(req.threadgroups_per_grid));
+				run.num_invocations = count;
+				run.force_high_clocks = op == HW_TEST_BED_REQUEST_EXECUTE_COMPUTE_BENCH;
+				run.inputs = input;
+				run.outputs = output;
 				if (err.empty())
 					if (!runner->run_compute_shader(run, &err))
 						setNewErr("Failed to run shader");
 				sendOp(HW_TEST_BED_RESPONSE_BEGIN, out);
-				sendOp(HW_TEST_BED_RESPONSE_TIME, out);
-				fwrite(&run.nanoseconds_elapsed, sizeof(run.nanoseconds_elapsed), 1, out);
 				if (err.empty()) {
+					for (uint32_t i = 0; i < count; i++) {
+						sendOp(HW_TEST_BED_RESPONSE_TIME, out);
+						fwrite(&output[i].nanoseconds_elapsed, sizeof(output[i].nanoseconds_elapsed), 1, out);
+					}
 					for (uint32_t i = 0; i < MAX_BUFFERS; i++) {
 						if (!wantsResult[i])
 							continue;
@@ -225,13 +238,18 @@ struct RequestHandler {
 					}
 				} else {
 					sendOp(HW_TEST_BED_RESPONSE_ERROR, out);
-					uint32_t size = static_cast<uint32_t>(err.size() + 1);
-					fwrite(&size, sizeof(size), 1, out);
-					fwrite(err.c_str(), size, 1, out);
+					sendString(err, out);
 				}
 				sendOp(HW_TEST_BED_RESPONSE_END, out);
 				fflush(out);
 				reset();
+				break;
+			}
+
+			case HW_TEST_BED_REQUEST_GET_GPU_NAME: {
+				sendOp(HW_TEST_BED_RESPONSE_STRING, out);
+				sendString(runner->get_device_name(), out);
+				fflush(out);
 				break;
 			}
 

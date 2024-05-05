@@ -1,5 +1,6 @@
 #include "runner.h"
 
+#include <array>
 #include <cstring>
 #include <Metal/Metal.h>
 
@@ -20,13 +21,31 @@ static void reportError(std::string* err, const char* action, NSError* nserr = n
 		*err = action;
 }
 
+// Enough time to spin to get the GPU into high power state
+static constexpr double TARGET_SPIN_TIME = 1.0 / 30;
+
 class MacRunner : public Runner {
 	dispatch_data_t metallib;
 	id<MTLDevice> dev;
+	id<MTLComputePipelineState> spin_pipeline;
 	id<MTLCommandQueue> queue;
+	id<MTLFence> fence;
+	id<MTLBuffer> spin_buffer = nullptr;
+	uint32_t spin_count = 2000000; // ~> about 120ms on M1 GPU, 60ms on M3 GPU
 public:
-	MacRunner(id<MTLDevice> dev, dispatch_data_t metallib): dev(dev), metallib(metallib) {
+	MacRunner(id<MTLDevice> dev, dispatch_data_t metallib, id<MTLComputePipelineState> spin_pipeline)
+		: metallib(metallib), dev(dev), spin_pipeline(spin_pipeline)
+	{
 		queue = [dev newCommandQueue];
+		fence = [dev newFence];
+	}
+	void make_spin_buffer(id<MTLCommandBuffer> cb) {
+		if (spin_buffer)
+			return;
+		spin_buffer = [dev newBufferWithLength:4 options:MTLResourceStorageModePrivate];
+		id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+		[blit fillBuffer:spin_buffer range:NSMakeRange(0, 4) value:0];
+		[blit endEncoding];
 	}
 	Buffer create_buffer(size_t size, std::string* err) override {
 		@autoreleasepool {
@@ -77,6 +96,17 @@ public:
 		return pipeline;
 	}
 
+	static bool handle_completed_cb(id<MTLCommandBuffer> cb, ComputeOutput& output, std::string* error)
+	{
+		[cb waitUntilCompleted];
+		if ([cb status] == MTLCommandBufferStatusError) {
+			reportError(error, "Command buffer failed", [cb error]);
+			return false;
+		}
+		output.nanoseconds_elapsed = static_cast<uint64_t>(([cb GPUEndTime] - [cb GPUStartTime]) * 1000000000ull);
+		return true;
+	}
+
 	bool run_compute_shader(ComputeRun& run, std::string* error) override {
 		@autoreleasepool {
 			NSError* nserr = nullptr;
@@ -90,33 +120,93 @@ public:
 				reportError(error, action, nserr);
 				return false;
 			}
-			id<MTLCommandBuffer> cb = [queue commandBuffer];
-			id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
-			[enc setComputePipelineState:pipe];
-			if (run.threadgroup_memory_size)
-				[enc setThreadgroupMemoryLength:run.threadgroup_memory_size atIndex:0];
-			for (size_t i = 0; i < run.num_buffers; i++) {
-				if (run.buffers[i].gpu_handle) {
-					[enc setBuffer:(__bridge id<MTLBuffer>)run.buffers[i].gpu_handle offset:0 atIndex:i];
+			id<MTLCommandBuffer> spin_cb = nullptr;
+			if (run.force_high_clocks) {
+				spin_cb = [queue commandBuffer];
+				make_spin_buffer(spin_cb);
+				id<MTLComputeCommandEncoder> enc = [spin_cb computeCommandEncoder];
+				[enc setBuffer:spin_buffer offset:0 atIndex:0];
+				[enc setBytes:&spin_count length:sizeof(spin_count) atIndex:1];
+				[enc setComputePipelineState:spin_pipeline];
+				[enc dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+				[enc updateFence:fence];
+				[enc endEncoding];
+				[spin_cb commit];
+			}
+			std::array<id<MTLCommandBuffer>, 4> prev_cb = {};
+			size_t current_invocation = 0;
+			for (current_invocation = 0; current_invocation < run.num_invocations; current_invocation++) {
+				const ComputeInput& input = run.inputs[current_invocation];
+				id<MTLCommandBuffer> cb = [queue commandBuffer];
+				id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+				[enc setComputePipelineState:pipe];
+				if (run.threadgroup_memory_size)
+					[enc setThreadgroupMemoryLength:run.threadgroup_memory_size atIndex:0];
+				for (size_t i = 0; i < run.num_buffers; i++) {
+					if (run.buffers[i].gpu_handle) {
+						[enc setBuffer:(__bridge id<MTLBuffer>)run.buffers[i].gpu_handle offset:0 atIndex:i];
+					}
+				}
+				[enc dispatchThreadgroups:MTLSizeMakeFromArray(input.threadgroups_per_grid)
+				    threadsPerThreadgroup:MTLSizeMakeFromArray(input.threads_per_threadgroup)];
+				if (current_invocation > 0 || run.force_high_clocks)
+					[enc waitForFence:fence];
+				if (current_invocation + 1 < run.num_invocations)
+					[enc updateFence:fence];
+				[enc endEncoding];
+				[cb commit];
+				if (!cb || !enc) {
+					reportError(error, "Failed to create command buffer and encoder", nullptr);
+					break;
+				}
+				uint32_t idx = current_invocation % prev_cb.size();
+				if (prev_cb[idx]) {
+					size_t prev_idx = current_invocation - prev_cb.size();
+					if (!handle_completed_cb(prev_cb[idx], run.outputs[prev_idx], error))
+						break;
+				}
+				prev_cb[idx] = cb;
+			}
+			if (current_invocation == run.num_invocations) {
+				current_invocation -= std::min(prev_cb.size(), current_invocation);
+				for (; current_invocation < run.num_invocations; current_invocation++) {
+					if (!handle_completed_cb(prev_cb[current_invocation % prev_cb.size()], run.outputs[current_invocation], error))
+						break;
 				}
 			}
-			[enc dispatchThreadgroups:MTLSizeMakeFromArray(run.threadgroups_per_grid)
-			    threadsPerThreadgroup:MTLSizeMakeFromArray(run.threads_per_threadgroup)];
-			[enc endEncoding];
-			[cb commit];
-			[cb waitUntilCompleted];
-			if (!cb || !enc) {
-				reportError(error, "Failed to create command buffer and encoder", nullptr);
-				return false;
-			} else if ([cb status] == MTLCommandBufferStatusError) {
-				reportError(error, "Command buffer failed", [cb error]);
-				return false;
+			if (current_invocation != run.num_invocations) {
+				// Something failed, wait for everything to finish
+				for (id<MTLCommandBuffer> cb : prev_cb)
+					[cb waitUntilCompleted];
 			}
-			run.nanoseconds_elapsed = static_cast<uint64_t>(([cb GPUEndTime] - [cb GPUStartTime]) * 1000000000ull);
+			// Update spin time to speed up future runs (initial estimite is fairly conservative)
+			if (spin_cb && [spin_cb status] == MTLCommandBufferStatusCompleted) {
+				double time = [spin_cb GPUEndTime] - [spin_cb GPUStartTime];
+				double adjustment = TARGET_SPIN_TIME / time;
+				double new_count = ceil(spin_count * adjustment);
+				new_count = std::max(20000.0, new_count);
+				new_count = std::min(10000000.0, new_count);
+				spin_count = static_cast<uint32_t>(new_count);
+			}
 		}
 		return true;
 	}
+
+	std::string get_device_name() override {
+		@autoreleasepool {
+			return [[dev name] UTF8String];
+		}
+	}
 };
+
+static const char* spin_shader = R"(
+kernel void spin(device uint* data [[buffer(0)]], constant uint& count [[buffer(1)]]) {
+	uint value = data[0];
+	for (uint i = count; i; i--)
+		value = data[value];
+	data[0] = value;
+}
+)";
 
 Runner* Runner::make(std::string* err) {
 	@autoreleasepool {
@@ -129,13 +219,28 @@ Runner* Runner::make(std::string* err) {
 		}
 		dispatch_data_t metallib = dispatch_data_create([nsmetallib bytes], [nsmetallib length], nullptr, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
 
-		MacRunner* res = nullptr;
 		NSArray<id<MTLDevice>>* devices = MTLCopyAllDevices();
 		if ([devices count] < 1) {
 			reportError(err, "No metal devices available");
-		} else {
-			res = new MacRunner([devices objectAtIndexedSubscript:0], metallib);
+			return nullptr;
 		}
-		return res;
+
+		id<MTLDevice> dev = [devices objectAtIndexedSubscript:0];
+		NSError* nserr = nullptr;
+		id<MTLLibrary> lib = [dev newLibraryWithSource:[NSString stringWithCString:spin_shader encoding:NSUTF8StringEncoding]
+		                                       options:nil
+		                                         error:&nserr];
+		if (nserr) {
+			reportError(err, "Failed to compile warm-up shader", nserr);
+			return nullptr;
+		}
+
+		id<MTLComputePipelineState> spin = [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"spin"] error:&nserr];
+		if (nserr) {
+			reportError(err, "Failed to make pipeline for warm-up shader", nserr);
+			return nullptr;
+		}
+
+		return new MacRunner(dev, metallib, spin);
 	}
 }

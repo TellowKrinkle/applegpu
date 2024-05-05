@@ -14,14 +14,22 @@ public:
 		size_t size = 0;
 	};
 	struct Shader;
+	struct ComputeInput {
+		uint32_t threadgroups_per_grid[3];
+		uint32_t threads_per_threadgroup[3];
+	};
+	struct ComputeOutput {
+		uint64_t nanoseconds_elapsed;
+	};
 	struct ComputeRun {
 		const Shader* shader;
 		const Buffer* buffers;
 		size_t num_buffers;
 		uint32_t threadgroup_memory_size;
-		uint32_t threadgroups_per_grid[3];
-		uint32_t threads_per_threadgroup[3];
-		uint64_t nanoseconds_elapsed;
+		uint32_t num_invocations;
+		bool force_high_clocks;
+		const ComputeInput* inputs;
+		ComputeOutput* outputs;
 	};
 	virtual ~Runner() = default;
 	virtual Buffer create_buffer(size_t size, std::string* err) = 0;
@@ -30,6 +38,7 @@ public:
 	virtual Shader* create_compute_shader(void* data, size_t size, std::string* err) = 0;
 	virtual void destroy_shader(Shader* shader) = 0;
 	virtual bool run_compute_shader(ComputeRun& run, std::string* error) = 0;
+	virtual std::string get_device_name() = 0;
 	static Runner* make(std::string* err);
 };
 

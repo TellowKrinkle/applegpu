@@ -53,6 +53,10 @@ class MetallibReplacer:
 			raise ValueError(f'Replacement shader for {name} in {section} is too big to fit in space used by old shader ({len(replacement)} > {size})')
 		return metallib[:offset] + replacement + metallib[offset + len(replacement):]
 
+	def get_code_space(self, section, name):
+		(offset, size) = self.shaders[section][name]
+		return size
+
 	def replace(self, section, name, replacement):
 		"""
 		Replace the function with name `name` in section `section` of the metallib `metallib` with the shader code `replacement`

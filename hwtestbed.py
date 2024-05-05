@@ -15,6 +15,20 @@ class HWTestBedResponse:
 	def set_buffer(self, index, buffer):
 		self.buffers[index] = buffer
 
+class HWTestBedBenchmarkResult:
+	def __init__(self, num_tg, tg_size, run_count):
+		self.times = []
+		self.num_tg = num_tg
+		self.tg_size = tg_size
+		self.run_count = run_count
+
+	def __get__(self, idx):
+		tg_idx = idx // self.run_count
+		return (self.times[idx], self.num_tg[tg_idx], self.tg_size[tg_idx])
+
+	def group(self, idx):
+		return self.times[idx * self.run_count : (idx + 1) * self.run_count]
+
 class HWTestBedRequest:
 	def __init__(self, shader=None, buffers=[], responses=[], num_tg=(1, 1, 1), tg_size=(1, 1, 1), tgsm=0):
 		self.buffers = {}
@@ -40,6 +54,11 @@ class HWTestBedRequest:
 	def set_tgsm_size(self, size):
 		self.tgsm = size
 
+class HWTestBedBenchmarkRequest(HWTestBedRequest):
+	def __init__(self, shader=None, buffers=[], num_tg=[(1, 1, 1)], tg_size=[(1, 1, 1)], tgsm=0, run_count=1):
+		super().__init__(shader=shader, buffers=buffers, num_tg=num_tg, tg_size=tg_size, tgsm=tgsm)
+		self.run_count = run_count
+
 class HWTestBed:
 	_binDir = os.path.join(os.path.dirname(__file__), 'hwtestbed')
 	_toolsDir = os.path.join(os.path.dirname(__file__), 'compiler_explorer_tools')
@@ -52,6 +71,7 @@ class HWTestBed:
 	_RESPONSE_ERROR = 3
 	_RESPONSE_TIME  = 4
 	_RESPONSE_BUFFER_DATA = 5
+	_RESPONSE_STRING = 6
 
 	def __init__(self, tmpfilename, replacer=None):
 		if not os.path.exists(self._hwtestbed):
@@ -79,6 +99,13 @@ class HWTestBed:
 		num_tg = tuple(num_tg) + (1, 1, 1)
 		tg_size = tuple(tg_size) + (1, 1, 1)
 		self._req(6, *num_tg[:3], *tg_size[:3])
+	def _req_execute_compute_bench(self, runs, num_tg, tg_size):
+		self._req(8, runs * len(num_tg))
+		for i in range(len(num_tg)):
+			num_tg_i = tuple(num_tg[i]) + (1, 1, 1)
+			tg_size_i = tuple(tg_size[i]) + (1, 1, 1)
+			data = struct.pack('=IIIIII', *num_tg_i[:3], *tg_size_i[:3]) * runs
+			self.request.write(data)
 	def _req_set_tgsm(self, size):
 		self._req(7, size)
 
@@ -89,17 +116,35 @@ class HWTestBed:
 		return data
 	def _read_response_opcode(self):
 		return self._read_response(1)[0]
+	def _read_string(self):
+		size = struct.unpack('=I', self._read_response(4))[0]
+		return self._read_response(size).decode('utf-8')
 
-	def _process_shader(self, shader):
+	def _get_replacer(self):
 		if not self.replacer:
 			if not os.path.exists(self._compileTool):
 				subprocess.run(['make', '-C', self._toolsDir])
 			subprocess.run([self._compileTool, '-o', self.tmpfilename.decode('utf-8'), self._metallib])
 			with open(self.tmpfilename, 'rb') as file:
 				self.replacer = metallib_replacer.MetallibReplacer(file.read())
-		return self.replacer.replace('__TEXT,__compute', '_agc.main', shader)
+		return self.replacer
+
+	def _process_shader(self, shader):
+		return self._get_replacer().replace('__TEXT,__compute', '_agc.main', shader)
+
+	def get_code_space(self):
+		return self._get_replacer().get_code_space('__TEXT,__compute', '_agc.main')
+
+	def get_name(self):
+		self._req(9)
+		self.request.flush()
+		opcode = self._read_response_opcode()
+		if opcode != self._RESPONSE_STRING:
+			raise Exception(f'hwtestbed desync, got opcode {opcode} expecting STRING')
+		return self._read_string()
 
 	def run(self, request):
+		bench = isinstance(request, HWTestBedBenchmarkRequest)
 		self._req_begin_compute()
 		self._req_set_cs(self.tmpfilename)
 		if request.shader:
@@ -111,12 +156,16 @@ class HWTestBed:
 		for (index, buffer) in request.buffers.items():
 			self._req_set_buffer_data(index, buffer)
 		self._req_set_tgsm(request.tgsm)
-		self._req_execute_compute(request.num_tg, request.tg_size)
+		if bench:
+			self._req_execute_compute_bench(request.run_count, request.num_tg, request.tg_size)
+			response = HWTestBedBenchmarkResult(request.num_tg, request.tg_size, request.run_count)
+		else:
+			self._req_execute_compute(request.num_tg, request.tg_size)
+			response = HWTestBedResponse()
 		self.request.flush()
 		opcode = self._read_response_opcode()
 		if opcode != self._RESPONSE_BEGIN:
 			raise Exception(f'hwtestbed desync, got opcode {opcode} expecting BEGIN')
-		response = HWTestBedResponse()
 		error = None
 		while True:
 			opcode = self._read_response_opcode()
@@ -124,10 +173,13 @@ class HWTestBed:
 				(index, size) = struct.unpack('=II', self._read_response(8))
 				response.set_buffer(index, self._read_response(size))
 			elif opcode == self._RESPONSE_ERROR:
-				size = struct.unpack('=I', self._read_response(4))[0]
-				error = HWTestBedError(self._read_response(size).decode('utf-8'))
+				error = HWTestBedError(self._read_string())
 			elif opcode == self._RESPONSE_TIME:
-				response.time = struct.unpack('=Q', self._read_response(8))[0] / 1000000000
+				time = struct.unpack('=Q', self._read_response(8))[0] / 1000000000
+				if bench:
+					response.times.append(time)
+				else:
+					response.time = time
 			elif opcode == self._RESPONSE_END:
 				break
 			else:
