@@ -17,6 +17,8 @@ def read_shader_archive(archiveName):
 			output.append((shaderType, shader))
 	return output
 
+import hexdump
+
 if __name__ == '__main__':
 	if not os.path.exists(compileTool):
 		subprocess.run(['make', '-C', toolsDir])
@@ -50,7 +52,7 @@ if __name__ == '__main__':
 				continue
 			data = subprocess.check_output([archiveExtractor, '--extract-named-shader', name, '--output', '-', '-'], input=shader)
 			# Trim excess traps (compiler uses them for padding)
-			while len(data) > 2 and data[-2] == 8 and data[-1] == 0:
+			while len(data) > 2 and (data[-2] == 8 and data[-1] == 0) or (data[-2] == 6 and data[-1] == 0):
 				data = data[:-2]
 			if not any(byte != 0 for byte in data):
 				continue
@@ -66,7 +68,7 @@ if __name__ == '__main__':
 			friendly_name = friendly_names.get(name, name)
 			print(f"{shaderType} {friendly_name}:")
 			code_offset = int(offset, 0) if use_offsets else 0
-			disassemble.disassemble(data, code_offset=code_offset)
+			disassemble.dism3(data)
 			print()
 		if found:
 			print()

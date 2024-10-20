@@ -11,6 +11,10 @@ def begin_encoding(mnem, operand_strings):
 
 def assemble_line(line):
 	line = line.strip()
+	try:
+		return bytes.fromhex(line)
+	except ValueError:
+		pass
 	operands = []
 	parts = line.split(None, 1)
 	mnem = parts[0]
@@ -39,6 +43,8 @@ def assemble_multiline(lines, print_asm=False):
 	output = bytearray()
 	try:
 		for line in lines:
+			if ';' in line:
+				line = line[:line.index(';')]
 			line = line.strip()
 			if ':' in line and not ' ' in line[:line.index(':')]:
 				index = line.index(':')

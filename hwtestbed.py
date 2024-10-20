@@ -168,32 +168,33 @@ if __name__ == '__main__':
 		else:
 			code = assemble.assemble_multiline(' '.join(args.instructions).split(';'))
 	before = bytes.fromhex(
-		'f2791004'         # get_sr       r30.cache, sr80 (thread_position_in_grid.x)
-		'9e7bfc02009c0102' # imadd        r30_r31.cache, r30.discard, 128, u14
-		'0e7dfee219000000' # iadd         r31, r31.discard, u15
-		'05010c0730c8f200' # device_load  0, i32, xyzw, r0_r1_r2_r3, r30_r31, 0, unsigned, lsl 2
-		'05211c0730c8f200' # device_load  0, i32, xyzw, r4_r5_r6_r7, r30_r31, 1, unsigned, lsl 2
-		'05412c0730c8f200' # device_load  0, i32, xyzw, r8_r9_r10_r11, r30_r31, 2, unsigned, lsl 2
-		'05613c0730c8f200' # device_load  0, i32, xyzw, r12_r13_r14_r15, r30_r31, 3, unsigned, lsl 2
-		'05814c0730c8f200' # device_load  0, i32, xyzw, r16_r17_r18_r19, r30_r31, 4, unsigned, lsl 2
-		'05a15c0730c8f200' # device_load  0, i32, xyzw, r20_r21_r22_r23, r30_r31, 5, unsigned, lsl 2
-		'05c16c0730c8f200' # device_load  0, i32, xyzw, r24_r25_r26_r27, r30_r31, 6, unsigned, lsl 2
-		'05e17c0730c8f200' # device_load  0, i32, xyzw, r28_r29_r30_r31, r30_r31, 7, unsigned, lsl 2
-		'3800'             # wait         0
+		'fca05006'                     # get_sr r31, thread_position_in_grid.x, group=0
+		'0604060006000600'             # wait 0
+		'9f11543e0200f8c81414'         # iadd r31, 0, r31 lsl 3, wait=0
+		'67005400071f2000570100404000' # device_load i32, xyzw, r0_r1_r2_r3,     u14_u15, r31 lsl 4,   0, group=5
+		'67005408071f2000570102404000' # device_load i32, xyzw, r4_r5_r6_r7,     u14_u15, r31 lsl 4,  16, group=5
+		'67005410071f2000570104404000' # device_load i32, xyzw, r8_r9_r10_r11,   u14_u15, r31 lsl 4,  32, group=5
+		'67005418071f2000570106404000' # device_load i32, xyzw, r12_r13_r14_r15, u14_u15, r31 lsl 4,  48, group=5
+		'67005420071f2000570108404000' # device_load i32, xyzw, r16_r17_r18_r19, u14_u15, r31 lsl 4,  64, group=5
+		'67005428071f200057010a404000' # device_load i32, xyzw, r20_r21_r22_r23, u14_u15, r31 lsl 4,  80, group=5
+		'67005430071f200057010c404000' # device_load i32, xyzw, r24_r25_r26_r27, u14_u15, r31 lsl 4,  96, group=5
+		'67004438071f200057010e404000' # device_load i32, xyzw, r28_r29_r30_r31, u14_u15, r31 lsl 4, 112, group=5, last
+		'0680060006000600'             # wait 5
+		'0b0001c0'                     # mov r0, r0, wait=5
 	)
 	after = bytes.fromhex(
-		'f2791004'         # get_sr       r30.cache, sr80 (thread_position_in_grid.x)
-		'9e7bfc02009c0102' # imadd        r30_r31.cache, r30.discard, 128, u14
-		'0e7dfee219000000' # iadd         r31, r31.discard, u15
-		'45010c0730c8f200' # device_store 0, i32, xyzw, r0_r1_r2_r3, r30_r31, 0, unsigned, lsl 2, 0
-		'45211c0730c8f200' # device_store 0, i32, xyzw, r4_r5_r6_r7, r30_r31, 1, unsigned, lsl 2, 0
-		'45412c0730c8f200' # device_store 0, i32, xyzw, r8_r9_r10_r11, r30_r31, 2, unsigned, lsl 2, 0
-		'45613c0730c8f200' # device_store 0, i32, xyzw, r12_r13_r14_r15, r30_r31, 3, unsigned, lsl 2, 0
-		'45814c0730c8f200' # device_store 0, i32, xyzw, r16_r17_r18_r19, r30_r31, 4, unsigned, lsl 2, 0
-		'45a15c0730c8f200' # device_store 0, i32, xyzw, r20_r21_r22_r23, r30_r31, 5, unsigned, lsl 2, 0
-		'45c16c0730c8f200' # device_store 0, i32, xyzw, r24_r25_r26_r27, r30_r31, 6, unsigned, lsl 2, 0
-		'45e17c0730c8f200' # device_store 0, i32, xyzw, r28_r29_r30_r31, r30_r31, 7, unsigned, lsl 2, 0
-		'8800'             # stop
+		'fca05006'                     # get_sr r31, thread_position_in_grid.x, group=0
+		'06fc060006000600'             # wait 0,1,2,3,4,5
+		'9ff1573e0200f8c81414'         # iadd r31, 0, r31 lsl 3, wait=0,1,2,3,4,5
+		'e7005400071f2000170000101000' # device_store i32, xyzw, r0_r1_r2_r3,     u14_u15, r31 lsl 4,   0
+		'e7005408071f2000178000101000' # device_store i32, xyzw, r4_r5_r6_r7,     u14_u15, r31 lsl 4,  16
+		'e7005410071f2000170001101000' # device_store i32, xyzw, r8_r9_r10_r11,   u14_u15, r31 lsl 4,  32
+		'e7005418071f2000178001101000' # device_store i32, xyzw, r12_r13_r14_r15, u14_u15, r31 lsl 4,  48
+		'e7005420071f2000170002101000' # device_store i32, xyzw, r16_r17_r18_r19, u14_u15, r31 lsl 4,  64
+		'e7005428071f2000178002101000' # device_store i32, xyzw, r20_r21_r22_r23, u14_u15, r31 lsl 4,  80
+		'e7005430071f2000170003101000' # device_store i32, xyzw, r24_r25_r26_r27, u14_u15, r31 lsl 4,  96
+		'e7005438071f2100178003101000' # device_store i32, xyzw, r28_r29_r30_r31, u14_u15, r31 lsl 4, 112, last
+		'0e000000'                     # stop
 	)
 	shader = b''.join((before, code, after))
 	registers = args.registers
