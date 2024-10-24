@@ -68,7 +68,7 @@ if __name__ == '__main__':
 			friendly_name = friendly_names.get(name, name)
 			print(f"{shaderType} {friendly_name}:")
 			code_offset = int(offset, 0) if use_offsets else 0
-			disassemble.dism3(data)
+			disassemble.disassemble(data)
 			print()
 		if found:
 			print()
