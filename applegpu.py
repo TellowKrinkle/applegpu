@@ -2405,6 +2405,7 @@ class DeviceLoadStoreInstructionDesc(MaskedInstructionDesc):
 class DeviceLoadInstructionDesc(DeviceLoadStoreInstructionDesc):
 	def __init__(self):
 		super().__init__('device_load', is_load=True, high_base=75)
+		self.add_operand(ImmediateDesc('q0', 73, 2))
 
 @register
 class DeviceStoreInstructionDesc(DeviceLoadStoreInstructionDesc):
