@@ -650,6 +650,8 @@ class InstructionDesc:
 		operands = self.decode_operands(n)
 		mnem, operands = self.map_to_alias(mnem, operands)
 		mask = self.mask | self.fields_mask
+		if self.sizes[0] != self.sizes[1]:
+			mask |= 1 << self.length_bit_pos
 		if (self.bits & ~mask) != (n & ~mask):
 			mnem += '.todo'
 		for operand in operands:
