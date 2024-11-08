@@ -3,7 +3,7 @@ import os
 
 from srgb import SRGB_TABLE
 
-MAX_OPCODE_LEN = 12
+MAX_OPCODE_LEN = 16
 
 ABS_FLAG = 'abs'
 NEGATE_FLAG = 'neg'
@@ -720,6 +720,36 @@ def add_float_modifier(r, modifier):
 		r.flags.append(NEGATE_FLAG)
 	return r
 
+class WaitDesc(OperandDesc):
+	def __init__(self, name, lo, hi=None):
+		super().__init__(name)
+		self.is_mask = hi is not None
+		if self.is_mask:
+			if hi == lo + 3:
+				self.add_field(lo, 6, self.name + 'm')
+			else:
+				self.add_merged_field(self.name, [
+					(lo, 3, self.name + 'ml'),
+					(hi, 3, self.name + 'mh')
+				])
+		else:
+			self.add_field(self.name, lo, 3)
+
+	def decode(self, fields):
+		if self.is_mask:
+			value = fields[self.name + 'm']
+		else:
+			value = fields[self.name]
+			if value:
+				value = 1 << (value - 1)
+		res = ''
+		if value:
+			res = 'wait '
+			for i in range(6):
+				if value & (1 << i):
+					res += str(i)
+		return res
+
 class AbstractDstOperandDesc(OperandDesc):
 	def set_thread(self, fields, corestate, thread, result):
 		r = self.decode(fields)
@@ -750,84 +780,10 @@ class ImplicitR0LDesc(AbstractDstOperandDesc):
 			return
 		raise Exception('invalid ImplicitR0LDesc %r' % (opstr,))
 
-
-@document_operand
-class ALUDstSDesc(AbstractDstOperandDesc):
-	def __init__(self, name):
-		super().__init__(name)
-		self.add_field(4, 4, self.name)
-		self.add_field(3, 1, self.name + 's')
-
-	def decode(self, fields):
-		value = fields[self.name]
-		size = fields[self.name + 's']
-		if size:
-			return Reg32(value)
-		else:
-			return Reg16(value << 1)
-
-	pseudocode = 'TODO'
-
-@document_operand
-class ALUDstMDesc(AbstractDstOperandDesc):
-	def __init__(self, name, size_off=3, lo_off=18):
-		super().__init__(name)
-		self.add_merged_field(self.name, [
-			(lo_off, 1, self.name + 'l'),
-			( 4, 4, self.name),
-			(22, 2, self.name + 'x'),
-		])
-		self.add_field(size_off, 1, self.name + 's')
-		self.add_field(21, 1, self.name + 'c')
-
-	def decode(self, fields):
-		value = fields[self.name]
-		size = fields[self.name + 's']
-		cache = fields[self.name + 'c']
-		if size:
-			r = Reg32(value >> 1)
-		else:
-			r = Reg16(value)
-		return add_dest_hint_modifier_m3(r, cache)
-
-	pseudocode = 'TODO'
-
-@document_operand
-class ALUDstLDesc(AbstractDstOperandDesc):
-	def __init__(self, name, size_off=3, lo_off=18, hi_off=60):
-		super().__init__(name)
-		self.add_merged_field(self.name, [
-			(lo_off, 1, self.name + 'l'),
-			( 4, 4, self.name),
-			(22, 2, self.name + 'x'),
-			(hi_off, 1, self.name + 'h'),
-		])
-		self.add_field(size_off, 1, self.name + 's')
-		self.add_field(21, 1, self.name + 'c')
-
-	def decode(self, fields):
-		value = fields[self.name]
-		size = fields[self.name + 's']
-		cache = fields[self.name + 'c']
-		if size:
-			r = Reg32(value >> 1)
-		else:
-			r = Reg16(value)
-		return add_dest_hint_modifier_m3(r, cache)
-
-	pseudocode = 'TODO'
-
 @document_operand
 class ALUDstDesc(AbstractDstOperandDesc):
-	def __init__(self, name, size_off=3, lo_off=17):
+	def __init__(self, name):
 		super().__init__(name)
-		self.add_merged_field(self.name, [
-			(lo_off, 1, self.name + 'l'),
-			(4, 4, self.name),
-		])
-		self.add_field(size_off, 1, self.name + 's')
-		self.add_field(21, 1, self.name + 'c')
-
 
 	def _allow64(self):
 		return False
@@ -838,33 +794,39 @@ class ALUDstDesc(AbstractDstOperandDesc):
 	def _paired(self):
 		return False
 
-	def decode(self, fields):
-		flags = fields[self.name + 't']
-		value = fields[self.name]
+	def _has_cache(self):
+		return True
 
-		if flags & 2 and self._allow32():
-			if (value & 1) and self._allow64():
-				assert not self._paired()
-				r = Reg64(value >> 1)
-			else:
-				if self._paired():
-					r = RegisterTuple(Reg32((value >> 1) + i) for i in range(2))
-				else:
-					r = Reg32(value >> 1)
-		else:
+	def _value_shift(self):
+		return 0
+
+	def decode(self, fields):
+		value = fields[self.name] << self._value_shift()
+		# TODO: 64
+		size = fields[self.name + 's'] if self._allow32() else 0
+		# TODO: What's the default for mov_imm7?
+		cache = fields[self.name + 'c'] if self._has_cache() else 0
+
+		if size == 0:
 			if self._paired():
 				r = RegisterTuple(Reg16(value + i) for i in range(2))
 			else:
 				r = Reg16(value)
+		else:
+			if self._paired():
+				r = RegisterTuple(Reg32((value >> 1) + i) for i in range(2))
+			else:
+				r = Reg32(value >> 1)
 
-		return add_dest_hint_modifier(r, flags)
+		return add_dest_hint_modifier_m3(r, cache)
 
 	def encode(self, fields, operand):
 		if self._paired() and isinstance(operand, RegisterTuple):
 			# TODO: validate
 			operand = operand.get_with_flags(0)
-		flags = 0
+		cache = 0
 		value = 0
+		size = 0
 		if isinstance(operand, BaseReg):
 			if isinstance(operand, Reg16):
 				value = operand.n
@@ -872,31 +834,31 @@ class ALUDstDesc(AbstractDstOperandDesc):
 				if not self._allow32():
 					print('WARNING: encoding invalid 32-bit register')
 				value = operand.n << 1
-				flags |= 2
+				size = 1
 			else:
 				assert isinstance(operand, Reg64)
 				if not self._allow64():
 					print('WARNING: encoding invalid 64-bit register')
 				value = (operand.n << 1) | 1
-				flags |= 2
 
 			if CACHE_FLAG in operand.flags:
-				flags |= 1
+				cache = 1
 		else:
 			raise Exception('invalid ALUDstDesc %r' % (operand,))
 
-		fields[self.name + 't'] = flags
-		fields[self.name] = value
+		if self._has_cache():
+			fields[self.name + 'c'] = flags
+		fields[self.name + 's'] = size
+		fields[self.name] = value >> self._value_shift()
 
 	pseudocode = '''
-	{name}(value, flags, max_size=32):
-		cache_flag = flags & 1
-		if flags & 2 and value & 1 and max_size >= 64:
-			return Reg64Reference(value >> 1, cache=cache_flag)
-		elif flags & 2 and max_size >= 32:
-			return Reg32Reference(value >> 1, cache=cache_flag)
+	{name}(value, cache, size, max_size=32):
+		if size and value & 1 and max_size >= 64:
+			return Reg64Reference(value >> 1, cache=cache)
+		elif size and max_size >= 32:
+			return Reg32Reference(value >> 1, cache=cache)
 		else:
-			return Reg16Reference(value, cache=cache_flag)
+			return Reg16Reference(value, cache=cache)
 	'''
 
 	def encode_string(self, fields, opstr):
@@ -911,14 +873,48 @@ class ALUDstDesc(AbstractDstOperandDesc):
 			return self.encode(fields, reg)
 		raise Exception('invalid ALUDstDesc %r' % (opstr,))
 
+class ALUDstSDesc(ALUDstDesc):
+	def __init__(self, name):
+		super().__init__(name)
+		self.add_field(4, 4, self.name)
+		self.add_field(3, 1, self.name + 's')
+
+	def _has_cache(self):
+		return False
+
+	def _value_shift(self):
+		return 1
+
+class ALUDstMDesc(ALUDstDesc):
+	def __init__(self, name, size_off=3, lo_off=18):
+		super().__init__(name)
+		self.add_merged_field(self.name, [
+			(lo_off, 1, self.name + 'l'),
+			( 4, 4, self.name),
+			(22, 2, self.name + 'x'),
+		])
+		self.add_field(size_off, 1, self.name + 's')
+		self.add_field(21, 1, self.name + 'c')
+
+class ALUDstLDesc(ALUDstDesc):
+	def __init__(self, name, size_off=3, lo_off=18, hi_off=60):
+		super().__init__(name)
+		self.add_merged_field(self.name, [
+			(lo_off, 1, self.name + 'l'),
+			( 4, 4, self.name),
+			(22, 2, self.name + 'x'),
+			(hi_off, 1, self.name + 'h'),
+		])
+		self.add_field(size_off, 1, self.name + 's')
+		self.add_field(21, 1, self.name + 'c')
+
 
 class PairedALUDstDesc(ALUDstDesc):
 	# converts r0 <-> r0_r1 and r0h <-> r0h_r1l
 	def _paired(self):
 		return True
 
-@document_operand
-class ALUDst64Desc(ALUDstDesc):
+class ALUDst64LDesc(ALUDstLDesc):
 	pseudocode = '''
 	{name}(value, flags):
 		return ALUDst(value, flags, max_size=64)
@@ -926,7 +922,7 @@ class ALUDst64Desc(ALUDstDesc):
 	def _allow64(self):
 		return True
 
-class ALUDst16Desc(ALUDstDesc):
+class ALUDst16LDesc(ALUDstLDesc):
 	pseudocode = '''
 	{name}(value, flags):
 		return ALUDst(value, flags, max_size=16)
@@ -1489,13 +1485,21 @@ class FieldDesc(OperandDesc):
 class IntegerFieldDesc(FieldDesc):
 	documentation_skip = True # (because it is what it is)
 
+	def _signed(self):
+		return False
+
 	def encode_string(self, fields, opstr):
 		value = try_parse_integer(opstr)
 
 		if value is None:
 			raise Exception('invalid IntegerFieldDesc %r' % (opstr,))
 
-		if value < 0 or value >= (1 << self.size):
+		lo = 0
+		hi = 1 << self.size
+		if self._signed():
+			hi >>= 1
+			lo = -hi
+		if value < lo or value >= hi:
 			value &= (1 << self.size) - 1
 			print('WARNING: encoding out of range IntegerFieldDesc %r (0-%d) as %d' % (opstr, (1 << self.size) - 1, value))
 
@@ -1511,6 +1515,16 @@ class ImmediateDesc(IntegerFieldDesc):
 
 	def evaluate_thread(self, fields, corestate, thread):
 		return fields[self.name]
+
+class SignedImmediateDesc(FieldDesc):
+	def _signed(self):
+		return True
+
+	def decode(self, fields):
+		return sign_extend(fields[self.name], self.size)
+
+	def evaluate_thread(self, fields, corestate, thread):
+		return self.decode(fields)
 
 @document_operand
 class Reg32Desc(FieldDesc):
@@ -1789,30 +1803,17 @@ class FConditionDesc(BaseConditionDesc):
 class MemoryShiftDesc(OperandDesc):
 	documentation_skip = True
 
-	def __init__(self, name):
+	def __init__(self, name, offset):
 		super().__init__(name)
-		self.add_field(42, 2, self.name)
+		self.add_field(offset, 3, self.name)
 
 	def decode(self, fields):
-#		effective_shift = fields['s']
-#		if effective_shift == 3:
-#			effective_shift = 2
-#
-#		bit_packed = fields['F'] in (8, 12, 13)
-#		if bit_packed:
-#			effective_shift = 2
-#
-#		effective_shift += {
-#			1: 2, # i16
-#			2: 4, # i32
-#			3: 2, # i16?
-#			6: 2, # unorm16
-#			7: 2, # unorm16
-#		}.get(fields['F'], 1)
-#		return 'lsl %d' % (effective_shift) if effective_shift else ''
-
 		shift = fields[self.name]
-		return 'lsl %d' % (shift) if shift else ''
+		if shift == 0:
+			shift = 4
+		else:
+			shift -= 1
+		return 'lsl %d' % shift if shift else ''
 
 	def encode_string(self, fields, opstr):
 		if opstr == '':
@@ -1823,39 +1824,59 @@ class MemoryShiftDesc(OperandDesc):
 				raise Exception('invalid MemoryShiftDesc %r' % (opstr,))
 		else:
 			raise Exception('invalid MemoryShiftDesc %r' % (opstr,))
-		fields[self.name] = s
+		fields[self.name] = 0 if s == 4 else s + 1
 
 
 @document_operand
 class MemoryIndexDesc(OperandDesc):
 	pseudocode = '''
-	{name}(value, flags):
-		if flags != 0:
-			return BroadcastImmediateReference(sign_extend(value, 16))
-		else:
-			if value & 1: UNDEFINED()
-			if value >= 0x100: UNDEFINED()
-			return Reg32Reference(value >> 1)
+	{name}(value, discard, size, sx, u):
+		TODO()
 	'''
 
-	def __init__(self, name):
+	def __init__(self, name, sx_off, t_off):
 		super().__init__(name)
 		self.add_merged_field(self.name, [
-			(20, 4, self.name + 'l'),
-			(32, 4, self.name + 'h'),
-			(56, 8, self.name + 'x'),
+			(39, 1, self.name + 'l'),
+			(40, 7, self.name),
 		])
-		self.add_field(24, 1, self.name + 't')
+		self.add_field(47, 1, self.name + 'd')
+		self.add_field(48, 5, self.name + 'x')
+		self.add_field(53, 1, self.name + 's')
+		self.add_field(54, 1, self.name + 'h')
+		self.add_field(sx_off, 1, self.name + 'sx')
+		self.add_field(t_off, 2, self.name + 't')
 
 	def decode_impl(self, fields, allow64):
-		flags = fields[self.name + 't']
-		value = fields[self.name]
-		if flags:
-			return sign_extend(value, 16)
+		value   = fields[self.name]
+		t       = fields[self.name + 't']
+		discard = fields[self.name + 'd']
+		size    = fields[self.name + 's']
+		sx      = fields[self.name + 'sx']
+		x       = fields[self.name + 'x']
+		h       = fields[self.name + 'h']
+
+		assert(t != 3)
+
+		if t == 2:
+			if size:
+				reg = UReg32(value >> 1)
+			else:
+				reg = UReg16(value)
+		elif t == 1:
+			if size:
+				reg = Reg32(value >> 1)
+			else:
+				reg = Reg16(value)
 		else:
-			assert (value & 1) == 0
-			assert value < 0x100
-			return Reg32(value >> 1)
+			return value + (discard << 8) + (x << 9) + (size << 14) + (h << 15)
+
+		if sx:
+			reg.flags.append(SIGN_EXTEND_FLAG)
+		if discard:
+			reg.flags.append(DISCARD_FLAG)
+
+		return reg
 
 	def decode(self, fields):
 		return self.decode_impl(fields, allow64=False)
@@ -1926,75 +1947,28 @@ class ThreadgroupIndexDesc(OperandDesc):
 
 		raise Exception('invalid ThreadgroupIndexDesc %r' % (opstr,))
 
-class AsyncMemoryRegDesc(OperandDesc):
-	def __init__(self, name):
-		super().__init__(name)
-		self.add_merged_field(self.name, [
-			(9, 6, self.name),
-		])
-		self.add_field(8, 1, self.name + 't')
-
-	def decode_impl(self, fields):
-		value = fields[self.name]
-		flags = fields[self.name + 't']
-		if flags:
-			return UReg64(value >> 1)
-		else:
-			return Reg64(value >> 1)
-
-	def decode(self, fields):
-		return self.decode_impl(fields)
-
-class AsyncMemoryBaseDesc(OperandDesc):
-	def __init__(self, name):
-		super().__init__(name)
-		self.add_merged_field(self.name, [
-			(16, 4, self.name + 'l'),
-			(36, 4, self.name + 'h'),
-		])
-		self.add_field(25, 1, self.name + 't')
-
-	def decode_impl(self, fields):
-		value = fields[self.name]
-		# Reg64(value) = address?
-		# Reg32(value+2) = length
-		reg_count = 5 if fields['F'] else 3
-		flags = fields[self.name + 't']
-		if flags:
-			return RegisterTuple((UReg32(value+i) for i in range(reg_count)))
-		else:
-			return RegisterTuple((Reg32(value+i) for i in range(reg_count)))
-
-	def decode(self, fields):
-		return self.decode_impl(fields)
-
 @document_operand
 class MemoryBaseDesc(OperandDesc):
-	def __init__(self, name):
+	def __init__(self, name, r_off):
 		super().__init__(name)
-		self.add_merged_field(self.name, [
-			(16, 4, self.name + 'l'),
-			(36, 4, self.name + 'h'),
-		])
-		self.add_field(27, 1, self.name + 't')
+		self.add_field(32, 7, self.name)
+		self.add_field(r_off, 1, self.name + 'r')
 
 	pseudocode = '''
-	{name}(value, flags):
-		if value & 1: UNDEFINED()
-		if flags != 0:
-			return UReg64Reference(value >> 1)
+	{name}(value, r):
+		if r:
+			return Reg64Reference(value)
 		else:
-			return Reg64Reference(value >> 1)
+			return UReg64Reference(value << 1)
 	'''
 
 	def decode_impl(self, fields, allow64):
-		flags = fields[self.name + 't']
+		r = fields[self.name + 'r']
 		value = fields[self.name]
-		assert (value & 1) == 0
-		if flags:
-			return UReg64(value >> 1)
+		if r:
+			return Reg64(value)
 		else:
-			return Reg64(value >> 1)
+			return UReg64(value << 1)
 
 	def decode(self, fields):
 		return self.decode_impl(fields, allow64=False)
@@ -2074,25 +2048,60 @@ class ZSDesc(OperandDesc):
 	def encode_string(self, fields, opstr):
 		assert(0)
 
+LOAD_STORE_MASK = {
+	0x0: '',
+	0x1: 'x',
+	0x2: 'yw',
+	0x3: 'xyw',
+	0x4: 'zw',
+	0x5: 'xzw',
+	0x6: 'yzw',
+	0x7: 'xyzw',
+	0x8: 'y',
+	0x9: 'xy',
+	0xa: 'z',
+	0xb: 'xz',
+	0xc: 'yz',
+	0xd: 'xyz',
+	0xe: 'w',
+	0xf: 'xw',
+}
+
+LOAD_STORE_TYPE = {
+	0: 'i16',
+	1: 'i32',
+	2: 'i8',
+	3: 'i32', # Unobserved
+}
+
 class MemoryRegDesc(OperandDesc):
-	def __init__(self, name, off=10, offx=40, offt=49):
+	def __init__(self, name):
 		super().__init__(name)
 		self.add_merged_field(self.name, [
-			(off, 6, self.name),
-			(offx, 2, self.name + 'x'),
+			(24, 1, self.name + 'l'),
+			(25, 7, self.name),
 		])
-		self.add_field(offt, 1, self.name + 't')
 
 	def decode_impl(self, fields, allow64):
-		flags = fields[self.name + 't']
 		value = fields[self.name]
-
-		count = bin(fields['mask']).count('1')
-
-		if flags == 0b0:
-			return RegisterTuple(Reg16(value + i) for i in range(count))
+		lstype = LOAD_STORE_TYPE[fields['type']]
+		count = len(LOAD_STORE_MASK[fields['mask']])
+		if lstype == 'i8':
+			regcount = (count + 1) >> 1
+			regtype = 16
+		elif lstype == 'i16':
+			regcount = count
+			regtype = 16
+		elif lstype == 'i32':
+			regcount = count
+			regtype = 32
 		else:
-			return RegisterTuple(Reg32((value >> 1) + i) for i in range(count))
+			assert(0)
+
+		if regtype == 16:
+			return RegisterTuple(Reg16(value + i) for i in range(regcount))
+		else:
+			return RegisterTuple(Reg32((value >> 1) + i) for i in range(regcount))
 
 	def decode(self, fields):
 		return self.decode_impl(fields, allow64=False)
@@ -2340,7 +2349,7 @@ class MovImm7InstructionDesc(MaskedInstructionDesc):
 @register
 class MovImm32InstructionDesc(MaskedInstructionDesc):
 	#documentation_begin_group = 'Miscellaneous Instructions'
-	documentation_name = 'Move From Special Register'
+	documentation_name = 'Move 32-bit immediate'
 	def __init__(self):
 		super().__init__('mov_imm', size=8)
 		self.add_constant(0, 3, 0b100)
@@ -2374,6 +2383,32 @@ class MovFromSrInstructionDesc(MaskedInstructionDesc):
 		self.add_operand(ALUDstLDesc('D'))
 		self.add_operand(SReg32Desc('SR'))
 		self.add_operand(ImmediateDesc('G', 29, 3))
+
+class DeviceLoadStoreInstructionDesc(MaskedInstructionDesc):
+	def __init__(self, name, is_load, high_base):
+		super().__init__(name, size=14)
+		self.add_constant(0, 12, 0x67 if is_load else 0xe7)
+		self.add_operand(ImmediateDesc('g', 70, 3)) # wait group
+		self.add_operand(EnumDesc('type', 68, 2, LOAD_STORE_TYPE))
+		self.add_operand(EnumDesc('mask', 64, 4, LOAD_STORE_MASK))
+		self.add_operand(MemoryRegDesc('R'))
+		self.add_operand(MemoryBaseDesc('B', high_base + 26))
+		self.add_operand(MemoryIndexDesc('I', high_base, high_base + 27))
+		self.add_operand(MemoryShiftDesc('s', high_base + 22))
+		self.add_operand(SignedImmediateDesc('offset', high_base + 2, 16))
+		self.add_operand(WaitDesc('W', lo=12, hi=15))
+		self.add_operand(ImmediateDesc('$', high_base + 19, 1)) # Should the load use L1 cache?
+
+
+@register
+class DeviceLoadInstructionDesc(DeviceLoadStoreInstructionDesc):
+	def __init__(self):
+		super().__init__('device_load', is_load=True, high_base=75)
+
+@register
+class DeviceStoreInstructionDesc(DeviceLoadStoreInstructionDesc):
+	def __init__(self):
+		super().__init__('device_store', is_load=False, high_base=73)
 
 @register
 class StopInstructionDesc(InstructionDesc):
