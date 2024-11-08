@@ -2399,13 +2399,14 @@ class DeviceLoadStoreInstructionDesc(MaskedInstructionDesc):
 		self.add_operand(SignedImmediateDesc('offset', high_base + 2, 16))
 		self.add_operand(WaitDesc('W', lo=12, hi=15))
 		self.add_operand(ImmediateDesc('$', high_base + 19, 1)) # Should the load use L1 cache?
+		self.add_operand(ImmediateDesc('q0', 18, 6))
 
 
 @register
 class DeviceLoadInstructionDesc(DeviceLoadStoreInstructionDesc):
 	def __init__(self):
 		super().__init__('device_load', is_load=True, high_base=75)
-		self.add_operand(ImmediateDesc('q0', 73, 2))
+		self.add_operand(ImmediateDesc('q1', 73, 2))
 
 @register
 class DeviceStoreInstructionDesc(DeviceLoadStoreInstructionDesc):
