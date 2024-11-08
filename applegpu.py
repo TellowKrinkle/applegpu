@@ -721,9 +721,10 @@ def add_float_modifier(r, modifier):
 	return r
 
 class WaitDesc(OperandDesc):
-	def __init__(self, name, lo, hi=None):
+	def __init__(self, name, lo, hi=None, use_label=True):
 		super().__init__(name)
 		self.is_mask = hi is not None
+		self.use_label = use_label
 		if self.is_mask:
 			if hi == lo + 3:
 				self.add_field(lo, 6, self.name + 'm')
@@ -742,9 +743,9 @@ class WaitDesc(OperandDesc):
 			value = fields[self.name]
 			if value:
 				value = 1 << (value - 1)
-		res = ''
+		res = '' if self.use_label else 'none'
 		if value:
-			res = 'wait '
+			res = 'wait ' if self.use_label else ''
 			for i in range(6):
 				if value & (1 << i):
 					res += str(i)
@@ -2440,7 +2441,7 @@ class WaitInstructionDesc(InstructionDesc):
 		super().__init__('wait', size=8)
 		self.add_constant(0, 4, 0b0110)
 		self.add_constant(4, 6, 0)
-		self.add_operand(BinaryDesc('Wm', 10, 6))
+		self.add_operand(WaitDesc('W', lo=10, hi=13, use_label=False))
 		self.add_constant(16, 16, 0b0110) # nop
 		self.add_constant(32, 16, 0b0110) # nop
 		self.add_constant(48, 16, 0b0110) # nop
