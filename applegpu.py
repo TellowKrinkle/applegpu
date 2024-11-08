@@ -2385,6 +2385,7 @@ class MovFromSrInstructionDesc(MaskedInstructionDesc):
 		self.add_constant(0, 3, 0b100)
 		self.add_constant(15, 1, 1)
 		self.add_constant(20, 1, 1)
+		self.add_unsure_constant(24, 4, 0b0110)
 		self.add_operand(ALUDstLDesc('D'))
 		self.add_operand(SReg32Desc('SR'))
 		self.add_operand(ImmediateDesc('G', 29, 3))
