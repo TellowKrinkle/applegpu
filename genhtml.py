@@ -2,10 +2,11 @@ import applegpu
 from applegpu import instruction_descriptors
 
 class Opcode(object):
-	def __init__(self, bits, byte_hints=True, hint_lines=None):
+	def __init__(self, bits, background, byte_hints=True, hint_lines=None):
 		self.hint_lines = hint_lines or []
 		self.byte_hints = byte_hints
 		self.bits = [None] * bits
+		self.background = background
 		self.colspan = [1] * bits
 		self.borders = ['left right'] * bits
 		self.left ='left'
@@ -104,7 +105,7 @@ class Opcode(object):
 				css_class = ('unknown ' + css_class).strip()
 			parts.append('<td colspan="%d" class="%s">' % (self.colspan[o], css_class))
 			if i is None:
-				parts.append('?')
+				parts.append('%d' % ((self.background >> o) & 1))
 			elif isinstance(i, int):
 				parts.append('%d' % i)
 			elif isinstance(i, str):
@@ -416,7 +417,7 @@ for o in instruction_descriptors:
 	if hasattr(o, 'documentation_begin_group'):
 		print('<h2>' + html(o.documentation_begin_group) + '</h2>')
 
-	builder = Opcode(o.sizes[-1] * 8)
+	builder = Opcode(o.sizes[-1] * 8, o.bits)
 
 	for offset, size, value in o.constants:
 		builder.add_constant(offset, size, value)

@@ -484,7 +484,7 @@ class InstructionDesc:
 
 	def matches(self, instr):
 		instr = self.mask_instr(instr)
-		return (instr & self.mask) == self.bits
+		return (instr & self.mask) == (self.bits & self.mask)
 
 	def add_raw_field(self, start, size, name):
 		# collision check
@@ -530,6 +530,12 @@ class InstructionDesc:
 		self.bits |= value << start
 
 		self.constants.append((start, size, value))
+
+	def add_unsure_constant(self, start, size, value):
+		mask = (1 << size) - 1
+		assert (value & ~mask) == 0
+		assert (self.mask & (mask << start)) == 0
+		self.bits |= value << start
 
 	def decode_raw_fields(self, instr):
 		instr = self.mask_instr(instr)
@@ -643,6 +649,9 @@ class InstructionDesc:
 		mnem = self.decode_mnem(n)
 		operands = self.decode_operands(n)
 		mnem, operands = self.map_to_alias(mnem, operands)
+		mask = self.mask | self.fields_mask
+		if (self.bits & ~mask) != (n & ~mask):
+			mnem += '.todo'
 		for operand in operands:
 			if isinstance(operand, RelativeOffset):
 				operand.base = pc
@@ -2357,12 +2366,7 @@ class MovImm32InstructionDesc(MaskedInstructionDesc):
 		self.add_constant(15, 1, 1)
 		self.add_constant(16, 1, 0)
 		self.add_constant(17, 1, 1) # Length = 8
-		self.add_constant(19, 2, 0)
-		self.add_constant(24, 1, 0)
-		self.add_constant(32, 1, 0)
-		self.add_constant(37, 5, 0)
-		self.add_constant(44, 4, 0)
-		self.add_constant(61, 3, 0)
+		self.add_constant(20, 1, 0)
 		self.add_operand(ALUDstLDesc('D'))
 		self.add_operand(ImmediateDesc('imm32', [
 			( 8,  7, 'immA'),
@@ -2399,14 +2403,16 @@ class DeviceLoadStoreInstructionDesc(MaskedInstructionDesc):
 		self.add_operand(SignedImmediateDesc('offset', high_base + 2, 16))
 		self.add_operand(WaitDesc('W', lo=12, hi=15))
 		self.add_operand(ImmediateDesc('$', high_base + 19, 1)) # Should the load use L1 cache?
-		self.add_operand(ImmediateDesc('q0', 18, 6))
+		self.add_unsure_constant(18, 2, 0b01)
+		self.add_operand(ImmediateDesc('q0', 20, 1))
+		self.add_unsure_constant(21, 3, 0b10)
 
 
 @register
 class DeviceLoadInstructionDesc(DeviceLoadStoreInstructionDesc):
 	def __init__(self):
 		super().__init__('device_load', is_load=True, high_base=75)
-		self.add_operand(ImmediateDesc('q1', 73, 2))
+		self.add_operand(ImmediateDesc('q1', 74, 1))
 
 @register
 class DeviceStoreInstructionDesc(DeviceLoadStoreInstructionDesc):
