@@ -1846,14 +1846,19 @@ class MemoryIndexDesc(OperandDesc):
 		TODO()
 	'''
 
-	def __init__(self, name, sx_off, t_off):
+	def __init__(self, name, sx_off, t_off, is_load):
 		super().__init__(name)
+		self.is_load = is_load
 		self.add_merged_field(self.name, [
 			(39, 1, self.name + 'l'),
-			(40, 7, self.name),
+			(40, 7 if is_load else 8, self.name),
 		])
-		self.add_field(47, 1, self.name + 'd')
-		self.add_field(48, 5, self.name + 'x')
+		if is_load:
+			self.add_field(47, 1, self.name + 'd')
+			self.add_field(48, 5, self.name + 'x')
+		else:
+			self.add_field(48, 1, self.name + 'd')
+			self.add_field(49, 4, self.name + 'x')
 		self.add_field(53, 1, self.name + 's')
 		self.add_field(54, 1, self.name + 'h')
 		self.add_field(sx_off, 1, self.name + 'sx')
@@ -1869,6 +1874,10 @@ class MemoryIndexDesc(OperandDesc):
 		h       = fields[self.name + 'h']
 
 		assert(t != 3)
+		if t != 0:
+			# We currently think these are only used for immediates
+			assert(x == 0)
+			assert(h == 0)
 
 		if t == 2:
 			if size:
@@ -1881,7 +1890,11 @@ class MemoryIndexDesc(OperandDesc):
 			else:
 				reg = Reg16(value)
 		else:
-			return value + (discard << 8) + (x << 9) + (size << 14) + (h << 15)
+			# Same bits either way, but the fields are in different places for register encoding, so...
+			if self.is_load:
+				return value + (discard << 8) + (x <<  9) + (size << 14) + (h << 15)
+			else:
+				return value + (discard << 9) + (x << 10) + (size << 14) + (h << 15)
 
 		if sx:
 			reg.flags.append(SIGN_EXTEND_FLAG)
@@ -2401,7 +2414,7 @@ class DeviceLoadStoreInstructionDesc(MaskedInstructionDesc):
 		self.add_operand(EnumDesc('mask', 64, 4, LOAD_STORE_MASK))
 		self.add_operand(MemoryRegDesc('R'))
 		self.add_operand(MemoryBaseDesc('B', high_base + 26))
-		self.add_operand(MemoryIndexDesc('I', high_base, high_base + 27))
+		self.add_operand(MemoryIndexDesc('I', high_base, high_base + 27, is_load))
 		self.add_operand(MemoryShiftDesc('s', high_base + 22))
 		self.add_operand(SignedImmediateDesc('offset', high_base + 2, 16))
 		self.add_operand(WaitDesc('W', lo=12, hi=15))
