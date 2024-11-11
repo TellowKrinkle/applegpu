@@ -11,10 +11,13 @@ instruction_lengths = {
 	0x0704:  6, # barrier
 	0x5701:  6, # jmp_exec_none
 	0x0f06:  6, # pop_exec
+	0x1704:  8, # unpack unorm/snorm
 	0x2705:  8, # popcount
+	0x2706:  8, # unpack rgb10a2 rg11b10f rgb9e5
 	0xa707:  8, # convert
 	0xa704:  8, # bitrev
 	0xa705:  8, # ffs
+	0x5706:  8, # store vertex output
 	0x3700:  8, # quad_and
 	0x3701:  8, # quad_xor
 	0x3702:  8, # quad_smin
@@ -45,6 +48,7 @@ instruction_lengths = {
 	0x2f02: 10, # log2
 	0x2f03: 10, # sin_pt_1???
 	0x9f01: 10, # iadd
+	0x9704: 10, # pack unorm/snorm
 	0x1f01: 10, # isub
 	0xa701: 10, # asr
 	0xa703: 10, # asrh
@@ -72,6 +76,7 @@ instruction_lengths = {
 	0x8f04: 14, # while + jmp_exec_any?
 	0x6700: 14, # device_load
 	0x6702: 14, # threadgroup_load
+	0xa706: 14, # pack rgb10a2 rg11b10f rgb9e5
 	0xe700: 14, # device_store
 	0xe702: 14, # theadgroup_store
 	0xd700: 16, # image_store
