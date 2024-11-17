@@ -740,12 +740,12 @@ class WaitDesc(OperandDesc):
 			if hi == lo + 3:
 				self.add_field(lo, 6, self.name + 'm')
 			else:
-				self.add_merged_field(self.name, [
+				self.add_merged_field(self.name + 'm', [
 					(lo, 3, self.name + 'ml'),
 					(hi, 3, self.name + 'mh')
 				])
 		else:
-			self.add_field(self.name, lo, 3)
+			self.add_field(lo, 3, self.name)
 
 	def decode(self, fields):
 		if self.is_mask:
