@@ -490,7 +490,7 @@ class InstructionDesc:
 		# collision check
 		mask = ((1 << size) - 1) << start
 		assert (self.mask & mask) == 0, name
-		assert (self.fields_mask & mask) == 0
+		assert (self.fields_mask & mask) == 0, name
 		for _, _, existing_name in self.fields:
 			assert existing_name != name, name
 
@@ -2434,6 +2434,376 @@ class DeviceLoadInstructionDesc(DeviceLoadStoreInstructionDesc):
 class DeviceStoreInstructionDesc(DeviceLoadStoreInstructionDesc):
 	def __init__(self):
 		super().__init__('device_store', is_load=False, high_base=73)
+
+class NewFloatSrcDesc(AbstractSrcOperandDesc):
+	def __init__(self, name, bit_off, l_off, c_off, d_off, s_off=None, h_off=None, u_off=None, n_off=None, a_off=None, u_default=0):
+		super().__init__(name)
+		self.add_merged_field(self.name, [
+			(l_off, 1, self.name + 'l'),
+			(bit_off, 6, self.name),
+			#(h_off, 1, self.name + 'h'),
+		])
+		if h_off is not None:
+			self.add_field(h_off, 1, self.name + 'h')
+
+		self.add_field(c_off, 1, self.name + 'c')
+		self.add_field(d_off, 1, self.name + 'd')
+		if s_off is not None:
+			self.add_field(s_off, 1, self.name + 's')
+		if u_off is not None:
+			self.add_field(u_off, 1, self.name + 'u')
+		if n_off is not None:
+			self.add_field(n_off, 1, self.name + 'n')
+		if a_off is not None:
+			self.add_field(a_off, 1, self.name + 'a')
+
+		self.u_default = u_default
+
+	def decode(self, fields):
+		high_bit = 	fields.get(self.name + 'h', 0)
+
+		uniform_bit = fields.get(self.name + 'u', self.u_default) # is uniform
+		size_bit = fields.get(self.name + 's', 1) # is 32-bit
+		discard_bit = fields[self.name + 'd']
+		cache_bit = fields[self.name + 'c']
+
+		negate_bit = fields.get(self.name + 'n', 0)
+		abs_bit = fields.get(self.name + 'a', 0)
+
+		if uniform_bit:
+			value = fields[self.name] | (discard_bit << 7) | (high_bit << 8)
+
+			if cache_bit:
+				return Immediate(decode_float_immediate(value))
+			else:
+				if size_bit:
+					r = UReg32(value >> 1)
+				else:
+					r = UReg16(value)
+		else:
+			value = fields[self.name] | (high_bit << 7)
+
+			if size_bit:
+				r = Reg32(value >> 1)
+			else:
+				r = Reg16(value)
+
+			if cache_bit:
+				r.flags.append(CACHE_FLAG)
+			if discard_bit:
+				r.flags.append(DISCARD_FLAG)
+
+		if abs_bit:
+			r.flags.append(ABS_FLAG)
+		if negate_bit:
+			r.flags.append(NEGATE_FLAG)
+
+		return r
+
+class NewFloatDstDesc(AbstractDstOperandDesc):
+	def __init__(self, name, bit_off, l_off, x_off, h_off=None, z_off=None, s_off=None, c_off=None, u_off=None):
+		super().__init__(name)
+		if h_off is None:
+			self.add_merged_field(self.name, [
+				(l_off, 1, self.name + 'l'),
+				(bit_off, 4, self.name),
+				(x_off, 2, self.name + 'x'),
+			])
+		else:
+			self.add_merged_field(self.name, [
+				(l_off, 1, self.name + 'l'),
+				(bit_off, 4, self.name),
+				(x_off, 2, self.name + 'x'),
+				(h_off, 1, self.name + 'h'),
+			])
+		if s_off is not None:
+			self.add_field(s_off, 1, self.name + 's') # size
+		if c_off is not None:
+			self.add_field(c_off, 1, self.name + 'c') # cache
+		if u_off is not None:
+			self.add_field(u_off, 1, self.name + 'u') # is uniform
+		if z_off is not None:
+			self.add_field(z_off, 1, self.name + 'z') # high part of uniform
+
+	def decode(self, fields):
+		value = fields[self.name]
+
+		uniform_bit = fields.get(self.name + 'u', 0) # is uniform
+		size_bit = fields[self.name + 's'] # is 32-bit
+		cache_bit = fields[self.name + 'c']
+
+		high_uniform_bit = fields.get(self.name + 'z', 0)
+
+		if uniform_bit:
+			value |= high_uniform_bit << 8
+			if size_bit:
+				r = UReg32(value >> 1)
+			else:
+				r = UReg16(value)
+		else:
+			if size_bit:
+				r = Reg32(value >> 1)
+			else:
+				r = Reg16(value)
+
+		if cache_bit:
+			r.flags.append(CACHE_FLAG)
+
+		return r
+
+class FFMAInstructionDescBase(MaskedInstructionDesc):
+	def fields_to_mnem_suffix(self, fields):
+		suffix = ''
+
+		if fields.get('S', 0):
+			suffix += '.sat'
+
+		#wm = fields.get('Wm', 0)
+		#for i in range(7):
+		#	if wm & (1<<i):
+		#		suffix += f'.wait{i}'
+
+		#w = fields.get('W', 0)
+		#if w:
+		#	suffix += f'.wait{w-1}'
+
+		if fields.get('q0', 0):
+			suffix += '.first'
+
+		return suffix
+
+
+@register
+class FFMA4InstructionDesc(MaskedInstructionDesc):
+	documentation_begin_group = 'Floating-Point Arithmetic'
+	def __init__(self):
+		super().__init__('ffma', size=4)
+		self.add_constant(0, 3, 0b001)
+
+		self.add_field(3, 1, 'Ds')
+
+		self.add_field(4, 4, 'D')
+
+		self.add_field(8, 1, 'As')
+
+		self.add_field(9, 6, 'A')
+		self.add_field(15, 1, 'Ac')
+
+		self.add_field(16, 1, 'Z') # select D is addend
+
+		self.add_constant(17, 1, 0b1)
+
+		self.add_constant(18, 1, 0b0)
+
+		self.add_field(19, 1, 'Ad')
+		self.add_field(20, 1, 'Bd')
+
+
+		self.add_field(21, 1, 'Dc')
+		self.add_field(22, 2, 'Dx')
+
+		self.add_field(24, 1, 'Bs')
+		self.add_field(25, 6, 'B')
+
+		self.add_field(31, 1, 'Bc')
+
+	pseudocode = '''
+	if Z == 1:
+		# B is 32-bit, but Bs should be zero (?)
+		D = A * D + B
+	else:
+		D = A * B + D
+	'''
+
+@register
+class FFMA6InstructionDesc(MaskedInstructionDesc):
+	def __init__(self):
+		super().__init__('ffma', size=6)
+		self.add_constant(0, 3, 0b001)
+
+		self.add_constant(16, 2, 0b10)
+
+		self.add_constant(18, 1, 0b1) # 'L'
+		self.add_constant(32, 2, 0b00)
+
+		self.add_operand(NewFloatDstDesc('D',
+			4, # 4 bits
+			l_off=34,
+			x_off=22,
+			s_off=3,
+			c_off=21,
+		))
+
+		self.add_operand(NewFloatSrcDesc('A',
+			9,
+			l_off=35,
+			s_off=8,
+			c_off=15,
+			d_off=19,
+		))
+
+		self.add_operand(NewFloatSrcDesc('B',
+			25,
+			l_off=36,
+			h_off=38,
+			s_off=24,
+			c_off=31,
+			d_off=20,
+			u_off=37,
+		))
+
+		self.add_operand(NewFloatSrcDesc('C',
+			41,
+			l_off=40,
+			c_off=47,
+			d_off=39,
+		))
+
+
+
+@register
+class FFMA8InstructionDesc(FFMAInstructionDescBase):
+	def __init__(self):
+		super().__init__('ffma', size=8)
+		self.add_constant(0, 3, 0b001)
+		self.add_constant(16, 2, 0b10)
+
+		self.add_constant(18, 1, 0b1) # 'L'
+		self.add_constant(32, 2, 0b01)
+
+		self.add_operand(NewFloatDstDesc('D',
+			4, # 4 bits
+			l_off=50,
+			x_off=22,
+			h_off=60,
+			s_off=3,
+			c_off=21,
+			u_off=54,
+		))
+
+		self.add_operand(NewFloatSrcDesc('A',
+			9,
+			l_off=51,
+			h_off=56,
+			s_off=8,
+			c_off=15,
+			d_off=19,
+			u_off=55,
+			#n_off=65,
+			#a_off=80,
+		))
+
+		self.add_operand(NewFloatSrcDesc('B',
+			25,
+			l_off=52,
+			h_off=58,
+			s_off=24,
+			c_off=31,
+			d_off=20,
+			u_off=57,
+			n_off=59,
+			#a_off=81,
+		))
+
+		self.add_operand(NewFloatSrcDesc('C',
+			41,
+			l_off=40,
+			h_off=38,
+			s_off=49,
+			c_off=47,
+			d_off=39,
+			u_off=37,
+			n_off=36,
+			a_off=35,
+		))
+
+		#self.add_field(61, 3, 'W') # wait
+		self.add_operand(WaitDesc('W', 61))
+
+@register
+class FFMAInstructionDesc(FFMAInstructionDescBase):
+
+	def __init__(self):
+		super().__init__('ffma', size=(10,12), length_bit_pos=32)
+		self.add_constant(0, 3, 0b001)
+		self.add_constant(16, 2, 0b10)
+		self.add_constant(18, 1, 0b1) # 'L'
+		self.add_constant(33, 1, 0b1)
+
+		self.add_operand(NewFloatDstDesc('D',
+			4, # 4 bits
+			l_off=50,
+			x_off=22,
+			h_off=60,
+			z_off=66,
+			s_off=3,
+			c_off=21,
+			u_off=54,
+		))
+
+		self.add_operand(NewFloatSrcDesc('A',
+			9,
+			l_off=51,
+			h_off=56,
+			s_off=8,
+			c_off=15,
+			d_off=19,
+			u_off=55,
+			n_off=65,
+			a_off=80,
+		))
+
+		self.add_operand(NewFloatSrcDesc('B',
+			25,
+			l_off=52,
+			h_off=58,
+			s_off=24,
+			c_off=31,
+			d_off=20,
+			u_off=57,
+			n_off=59,
+			a_off=81,
+		))
+
+		self.add_operand(NewFloatSrcDesc('C',
+			41,
+			l_off=40,
+			h_off=38,
+			s_off=49,
+			c_off=47,
+			d_off=39,
+			u_off=37,
+			n_off=36,
+			a_off=35,
+		))
+
+		self.add_operand(WaitDesc('W', 61, 77))
+		#self.add_merged_field('Wm', [
+		#	(61, 3, 'Wml'),
+		#	(77, 3, 'Wmh'),
+		#])
+
+		self.add_field(73, 1, 'S') # saturate
+		self.add_field(88, 1, 'q0') # set if first in function
+
+	pseudocode = '''
+	op: D = A * B + C
+
+	W -> wait for loads
+	S -> saturate
+	u -> is uniform (dest can be uniform)
+	s -> size (is 32-bit)
+	n -> negate
+	a -> abs
+	d -> discard
+	c -> cache
+	L, L2 -> length modifiers
+	dest = Dz:Dh:Dx:D:Dl
+	src = Ah:Ad:A:Al if Au, otherwise Ah:A:Al
+	q0 -> set if first in function?
+
+	TODO: undiscovered bits, verification
+	'''
 
 @register
 class StopInstructionDesc(InstructionDesc):
