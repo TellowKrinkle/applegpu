@@ -1842,8 +1842,20 @@ class MemoryShiftDesc(OperandDesc):
 @document_operand
 class MemoryIndexDesc(OperandDesc):
 	pseudocode = '''
-	{name}(value, discard, size, sx, u):
-		TODO()
+	{name}(value, discard, size, sx, t):
+		match t:
+			case 0:
+				# TODO: Does sx affect this?  Apple's compiler uses this for positive values and the offset field for negative ones...
+				return UnsignedImmediate(all 16 bits between l and h, which includes value, discard, and size)
+			case 1:
+				reg = size ?  Reg32Reference(value) :  Reg16Reference(value)
+			case 2:
+				reg = size ? UReg32Reference(value) : UReg16Reference(value)
+		if sx:
+			reg.sign_extend_to_64_bits
+		if discard:
+			reg.discard
+		return reg
 	'''
 
 	def __init__(self, name, sx_off, t_off, is_load):
@@ -2404,6 +2416,9 @@ class MovFromSrInstructionDesc(MaskedInstructionDesc):
 		self.add_operand(ALUDstLDesc('D'))
 		self.add_operand(SReg32Desc('SR'))
 		self.add_operand(ImmediateDesc('g', 29, 3))
+	pseudocode = '''
+	g -> output wait group
+	'''
 
 class DeviceLoadStoreInstructionDesc(MaskedInstructionDesc):
 	def __init__(self, name, is_load, high_base):
@@ -2429,11 +2444,29 @@ class DeviceLoadInstructionDesc(DeviceLoadStoreInstructionDesc):
 	def __init__(self):
 		super().__init__('device_load', is_load=True, high_base=75)
 		self.add_operand(ImmediateDesc('q1', 74, 1))
+	pseudocode = '''
+	R = *(B + I * s + offset)
+
+	s and offset are in bytes (unlike M1, where they were in elements)
+	If type is i8, one 16-bit register is allocated per two input elements, and any unused bits are zeroed
+	g -> Output wait group
+	$ -> Unset on coherent buffers, probably controls whether to skip noncoherent cache levels
+	q0 -> Seems to get unset on the last load of a shader?
+	q1 -> ???
+	'''
 
 @register
 class DeviceStoreInstructionDesc(DeviceLoadStoreInstructionDesc):
 	def __init__(self):
 		super().__init__('device_store', is_load=False, high_base=73)
+
+	pseudocode = '''
+	*(B + I * s + offset) = R
+
+	s and offset are in bytes (unlike M1, where they were in elements)
+	$ -> Unset on coherent buffers, probably controls whether to skip noncoherent cache levels
+	q0 -> I thought I've seen this unset on stores before but now I can't get it to happen
+	'''
 
 class NewFloatSrcDesc(AbstractSrcOperandDesc):
 	def __init__(self, name, bit_off, l_off, c_off, d_off, s_off=None, h_off=None, u_off=None, n_off=None, a_off=None, u_default=0):
