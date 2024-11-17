@@ -2469,13 +2469,44 @@ class DeviceStoreInstructionDesc(DeviceLoadStoreInstructionDesc):
 	'''
 
 class NewFloatSrcDesc(AbstractSrcOperandDesc):
-	def __init__(self, name, bit_off, l_off, c_off, d_off, s_off=None, h_off=None, u_off=None, n_off=None, a_off=None, u_default=0):
+	def is_int(self, fields):
+		return False
+	def get_size(self, fields):
+		return fields.get(self.name + 's', 1)
+
+	def __init__(self, name, bit_off, l_off=None, c_off=None, d_off=None, common_layout=None, s_off=None, h_off=None, u_off=None, n_off=None, a_off=None, u_default=0):
 		super().__init__(name)
-		self.add_merged_field(self.name, [
-			(l_off, 1, self.name + 'l'),
-			(bit_off, 6, self.name),
-			#(h_off, 1, self.name + 'h'),
-		])
+		self.value_shift = 1 if l_off is None else 0
+		if common_layout is not None:
+			c_off = c_off or bit_off + 6
+			if s_off is None and (common_layout == 'A' or common_layout == 'B'):
+				s_off = bit_off - 1
+			if common_layout == 'A':
+				d_off = d_off or 19
+				l_off = l_off or 51
+				u_off = u_off or l_off + 4
+				h_off = h_off or l_off + 5
+			elif common_layout == 'B':
+				d_off = d_off or 20
+				l_off = l_off or 52
+				u_off = u_off or l_off + 5
+				h_off = h_off or l_off + 6
+				n_off = n_off or l_off + 7
+			else:
+				l_off = l_off or bit_off - 1
+				d_off = d_off or bit_off - 2
+				h_off = h_off or bit_off - 3
+				u_off = u_off or bit_off - 4
+				n_off = n_off or bit_off - 5
+				a_off = a_off or bit_off - 6
+
+		if l_off is not None:
+			self.add_merged_field(self.name, [
+				(l_off, 1, self.name + 'l'),
+				(bit_off, 6, self.name)
+			])
+		else:
+			self.add_field(bit_off, 6, self.name)
 		if h_off is not None:
 			self.add_field(h_off, 1, self.name + 'h')
 
@@ -2495,8 +2526,9 @@ class NewFloatSrcDesc(AbstractSrcOperandDesc):
 	def decode(self, fields):
 		high_bit = 	fields.get(self.name + 'h', 0)
 
+		value = fields[self.name] << self.value_shift
 		uniform_bit = fields.get(self.name + 'u', self.u_default) # is uniform
-		size_bit = fields.get(self.name + 's', 1) # is 32-bit
+		size_bit = self.get_size(fields) # is 32-bit
 		discard_bit = fields[self.name + 'd']
 		cache_bit = fields[self.name + 'c']
 
@@ -2504,17 +2536,20 @@ class NewFloatSrcDesc(AbstractSrcOperandDesc):
 		abs_bit = fields.get(self.name + 'a', 0)
 
 		if uniform_bit:
-			value = fields[self.name] | (discard_bit << 7) | (high_bit << 8)
+			value |= (discard_bit << 7) | (high_bit << 8)
 
 			if cache_bit:
-				return Immediate(decode_float_immediate(value))
+				if self.is_int(fields):
+					return Immediate(value & 0xff)
+				else:
+					return Immediate(decode_float_immediate(value))
 			else:
 				if size_bit:
 					r = UReg32(value >> 1)
 				else:
 					r = UReg16(value)
 		else:
-			value = fields[self.name] | (high_bit << 7)
+			value |= (high_bit << 7)
 
 			if size_bit:
 				r = Reg32(value >> 1)
@@ -2526,29 +2561,30 @@ class NewFloatSrcDesc(AbstractSrcOperandDesc):
 			if discard_bit:
 				r.flags.append(DISCARD_FLAG)
 
-		if abs_bit:
-			r.flags.append(ABS_FLAG)
-		if negate_bit:
-			r.flags.append(NEGATE_FLAG)
+		if self.is_int(fields):
+			if negate_bit:
+				r.flags.append(SIGN_EXTEND_FLAG)
+		else:
+			if abs_bit:
+				r.flags.append(ABS_FLAG)
+			if negate_bit:
+				r.flags.append(NEGATE_FLAG)
 
 		return r
 
 class NewFloatDstDesc(AbstractDstOperandDesc):
-	def __init__(self, name, bit_off, l_off, x_off, h_off=None, z_off=None, s_off=None, c_off=None, u_off=None):
+	def __init__(self, name, bit_off=4, l_off=None, x_off=22, h_off=None, z_off=None, s_off=3, c_off=21, u_off=None):
 		super().__init__(name)
-		if h_off is None:
-			self.add_merged_field(self.name, [
-				(l_off, 1, self.name + 'l'),
-				(bit_off, 4, self.name),
-				(x_off, 2, self.name + 'x'),
-			])
-		else:
-			self.add_merged_field(self.name, [
-				(l_off, 1, self.name + 'l'),
-				(bit_off, 4, self.name),
-				(x_off, 2, self.name + 'x'),
-				(h_off, 1, self.name + 'h'),
-			])
+		self.value_shift = 1 if l_off is None else 0
+		main_fields = [
+			(bit_off, 4, self.name),
+			(x_off,   2, self.name + 'x')
+		]
+		if l_off is not None:
+			main_fields.insert(0, (l_off, 1, self.name + 'l'))
+		if h_off is not None:
+			main_fields.append((h_off, 1, self.name + 'h'))
+		self.add_merged_field(self.name, main_fields)
 		if s_off is not None:
 			self.add_field(s_off, 1, self.name + 's') # size
 		if c_off is not None:
@@ -2559,7 +2595,7 @@ class NewFloatDstDesc(AbstractDstOperandDesc):
 			self.add_field(z_off, 1, self.name + 'z') # high part of uniform
 
 	def decode(self, fields):
-		value = fields[self.name]
+		value = fields[self.name] << self.value_shift
 
 		uniform_bit = fields.get(self.name + 'u', 0) # is uniform
 		size_bit = fields[self.name + 's'] # is 32-bit
@@ -2613,32 +2649,16 @@ class FFMA4InstructionDesc(MaskedInstructionDesc):
 		super().__init__('ffma', size=4)
 		self.add_constant(0, 3, 0b001)
 
-		self.add_field(3, 1, 'Ds')
 
-		self.add_field(4, 4, 'D')
+		self.add_operand(NewFloatDstDesc('D',  4))
+		self.add_operand(NewFloatSrcDesc('A',  9, s_off= 8, c_off=15, d_off=19))
+		self.add_operand(NewFloatSrcDesc('B', 25, s_off=24, c_off=31, d_off=20))
 
-		self.add_field(8, 1, 'As')
-
-		self.add_field(9, 6, 'A')
-		self.add_field(15, 1, 'Ac')
-
-		self.add_field(16, 1, 'Z') # select D is addend
+		# TODO: Actually repeat D and swap with B if necessary
+		self.add_operand(EnumDesc('Z', 16, 1, {0: 'A*B+D', 1: 'A*D+B'}))
 
 		self.add_constant(17, 1, 0b1)
-
 		self.add_constant(18, 1, 0b0)
-
-		self.add_field(19, 1, 'Ad')
-		self.add_field(20, 1, 'Bd')
-
-
-		self.add_field(21, 1, 'Dc')
-		self.add_field(22, 2, 'Dx')
-
-		self.add_field(24, 1, 'Bs')
-		self.add_field(25, 6, 'B')
-
-		self.add_field(31, 1, 'Bc')
 
 	pseudocode = '''
 	if Z == 1:
@@ -2659,13 +2679,7 @@ class FFMA6InstructionDesc(MaskedInstructionDesc):
 		self.add_constant(18, 1, 0b1) # 'L'
 		self.add_constant(32, 2, 0b00)
 
-		self.add_operand(NewFloatDstDesc('D',
-			4, # 4 bits
-			l_off=34,
-			x_off=22,
-			s_off=3,
-			c_off=21,
-		))
+		self.add_operand(NewFloatDstDesc('D', l_off=34))
 
 		self.add_operand(NewFloatSrcDesc('A',
 			9,
@@ -2692,8 +2706,6 @@ class FFMA6InstructionDesc(MaskedInstructionDesc):
 			d_off=39,
 		))
 
-
-
 @register
 class FFMA8InstructionDesc(FFMAInstructionDescBase):
 	def __init__(self):
@@ -2704,51 +2716,10 @@ class FFMA8InstructionDesc(FFMAInstructionDescBase):
 		self.add_constant(18, 1, 0b1) # 'L'
 		self.add_constant(32, 2, 0b01)
 
-		self.add_operand(NewFloatDstDesc('D',
-			4, # 4 bits
-			l_off=50,
-			x_off=22,
-			h_off=60,
-			s_off=3,
-			c_off=21,
-			u_off=54,
-		))
-
-		self.add_operand(NewFloatSrcDesc('A',
-			9,
-			l_off=51,
-			h_off=56,
-			s_off=8,
-			c_off=15,
-			d_off=19,
-			u_off=55,
-			#n_off=65,
-			#a_off=80,
-		))
-
-		self.add_operand(NewFloatSrcDesc('B',
-			25,
-			l_off=52,
-			h_off=58,
-			s_off=24,
-			c_off=31,
-			d_off=20,
-			u_off=57,
-			n_off=59,
-			#a_off=81,
-		))
-
-		self.add_operand(NewFloatSrcDesc('C',
-			41,
-			l_off=40,
-			h_off=38,
-			s_off=49,
-			c_off=47,
-			d_off=39,
-			u_off=37,
-			n_off=36,
-			a_off=35,
-		))
+		self.add_operand(NewFloatDstDesc('D', l_off=50, h_off=60, u_off=54))
+		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A'))
+		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B'))
+		self.add_operand(NewFloatSrcDesc('C', 41, common_layout='C', s_off=49))
 
 		#self.add_field(61, 3, 'W') # wait
 		self.add_operand(WaitDesc('W', 61))
@@ -2763,58 +2734,12 @@ class FFMAInstructionDesc(FFMAInstructionDescBase):
 		self.add_constant(18, 1, 0b1) # 'L'
 		self.add_constant(33, 1, 0b1)
 
-		self.add_operand(NewFloatDstDesc('D',
-			4, # 4 bits
-			l_off=50,
-			x_off=22,
-			h_off=60,
-			z_off=66,
-			s_off=3,
-			c_off=21,
-			u_off=54,
-		))
-
-		self.add_operand(NewFloatSrcDesc('A',
-			9,
-			l_off=51,
-			h_off=56,
-			s_off=8,
-			c_off=15,
-			d_off=19,
-			u_off=55,
-			n_off=65,
-			a_off=80,
-		))
-
-		self.add_operand(NewFloatSrcDesc('B',
-			25,
-			l_off=52,
-			h_off=58,
-			s_off=24,
-			c_off=31,
-			d_off=20,
-			u_off=57,
-			n_off=59,
-			a_off=81,
-		))
-
-		self.add_operand(NewFloatSrcDesc('C',
-			41,
-			l_off=40,
-			h_off=38,
-			s_off=49,
-			c_off=47,
-			d_off=39,
-			u_off=37,
-			n_off=36,
-			a_off=35,
-		))
+		self.add_operand(NewFloatDstDesc('D', l_off=50, h_off=60, z_off=66, u_off=54))
+		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', a_off=80, n_off=65))
+		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', a_off=81))
+		self.add_operand(NewFloatSrcDesc('C', 41, common_layout='C', s_off=49))
 
 		self.add_operand(WaitDesc('W', 61, 77))
-		#self.add_merged_field('Wm', [
-		#	(61, 3, 'Wml'),
-		#	(77, 3, 'Wmh'),
-		#])
 
 		self.add_field(73, 1, 'S') # saturate
 		self.add_field(88, 1, 'q0') # set if first in function
