@@ -2572,6 +2572,13 @@ class NewFloatSrcDesc(AbstractSrcOperandDesc):
 
 		return r
 
+class FFMA4BDesc(NewFloatSrcDesc):
+	def get_size(self, fields):
+		if fields['Z']:
+			return 1
+		else:
+			return fields[self.name + 's']
+
 class NewFloatDstDesc(AbstractDstOperandDesc):
 	def __init__(self, name, bit_off=4, l_off=None, x_off=22, h_off=None, z_off=None, s_off=3, c_off=21, u_off=None):
 		super().__init__(name)
@@ -2649,10 +2656,9 @@ class FFMA4InstructionDesc(MaskedInstructionDesc):
 		super().__init__('ffma', size=4)
 		self.add_constant(0, 3, 0b001)
 
-
 		self.add_operand(NewFloatDstDesc('D',  4))
 		self.add_operand(NewFloatSrcDesc('A',  9, s_off= 8, c_off=15, d_off=19))
-		self.add_operand(NewFloatSrcDesc('B', 25, s_off=24, c_off=31, d_off=20))
+		self.add_operand(FFMA4BDesc('B', 25, s_off=24, c_off=31, d_off=20))
 
 		# TODO: Actually repeat D and swap with B if necessary
 		self.add_operand(EnumDesc('Z', 16, 1, {0: 'A*B+D', 1: 'A*D+B'}))
