@@ -2660,15 +2660,22 @@ class FFMA4InstructionDesc(MaskedInstructionDesc):
 		self.add_operand(NewFloatSrcDesc('A',  9, s_off= 8, c_off=15, d_off=19))
 		self.add_operand(FFMA4BDesc('B', 25, s_off=24, c_off=31, d_off=20))
 
-		# TODO: Actually repeat D and swap with B if necessary
-		self.add_operand(EnumDesc('Z', 16, 1, {0: 'A*B+D', 1: 'A*D+B'}))
+		self.add_field(16, 1, 'Z')
 
 		self.add_constant(17, 1, 0b1)
 		self.add_constant(18, 1, 0b0)
 
+	def fields_to_operands(self, fields):
+		operands = super().fields_to_operands(fields)
+		if fields['Z']:
+			operands.insert(2, operands[0])
+		else:
+			operands.insert(3, operands[0])
+		return operands
+
 	pseudocode = '''
 	if Z == 1:
-		# B is 32-bit, but Bs should be zero (?)
+		# B is 32-bit, Bs is ignored
 		D = A * D + B
 	else:
 		D = A * B + D
