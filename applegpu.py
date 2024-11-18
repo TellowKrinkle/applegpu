@@ -2769,6 +2769,202 @@ class FFMAInstructionDesc(FFMAInstructionDescBase):
 	TODO: undiscovered bits, verification
 	'''
 
+class CmpSrcDesc(NewFloatSrcDesc):
+	def is_int(self, fields):
+		return (fields['cc'] & 4) != 0
+
+class SelSrcDesc(NewFloatSrcDesc):
+	def is_int(self, fields):
+		return fields['Di']
+	def get_size(self, fields):
+		return fields['Ds']
+
+CMPSEL_CC = {
+	0x0: 'fgtn',
+	0x1: 'fltn',
+	0x2: 'fgt',
+	0x3: 'flt',
+	0x4: 'ugt',
+	0x5: 'ult',
+	0x6: 'sgt',
+	0x7: 'slt',
+	0x8: 'feq',
+	# 0x9: 'fneq?',
+	0xa: 'fge',
+	0xb: 'fle',
+	# 0xc: ?,
+	# 0xd: ?,
+	0xe: 'test', # (a & b) != 0
+	0xf: 'ieq',
+}
+
+class CmpSelInstructionBase(MaskedInstructionDesc):
+	def __init__(self, name, size):
+		super().__init__(name, size=size)
+		self.add_constant(0, 3, 0b010)
+		self.add_field(18, 1, 'Di') # Is output (and therefore sel inputs) integer?
+
+@register
+class CmpSel6InstructionDesc(CmpSelInstructionBase):
+	documentation_begin_group = 'Compare-Select Instructions'
+	cc_to_minmax = {
+		0: 'fmax',
+		1: 'fmin',
+		2: 'fmaxsse', # Like SSE maxps (a > b ? a : b)
+		3: 'fminsse', # Like SSE minps (a < b ? a : b)
+		4: 'umax',
+		5: 'umin',
+		6: 'smax',
+		7: 'smin'
+	}
+	minmax_to_cc = { v: k for k, v in cc_to_minmax.items() }
+
+	def __init__(self):
+		super().__init__('cmpsel', size=6)
+		self.add_constant(16, 1, 0) # Length = 6
+		self.add_operand(EnumDesc('cc', 32, 3, CMPSEL_CC))
+		self.add_operand(NewFloatDstDesc('D', l_off=3, s_off=17, u_off=38, h_off=44))
+		self.add_operand(CmpSrcDesc('A',  9, common_layout='A', l_off=35))
+		self.add_operand(CmpSrcDesc('B', 25, common_layout='B', l_off=36))
+		self.add_operand(WaitDesc('W', 45))
+		# Shadow operands for making a virtual full 5-arg cmpsel
+		self.sel_a = SelSrcDesc('A',  9, common_layout='A', l_off=35)
+		self.sel_b = SelSrcDesc('B', 25, common_layout='B', l_off=36)
+
+	def is_cursed(self, fields):
+		# Input and output size doesn't match
+		if fields['As'] != fields['Ds'] or fields['Bs'] != fields['Ds']:
+			return True
+		# Things can go funny if cmp and sel integer-ness don't match
+		if ((fields['cc'] & 4) != 0) != (fields['Di'] != 0):
+			# Negate affects floating point and integer fields differently
+			if fields['Bn']:
+				return True
+			# Immediates are interpreted differently for integer fields
+			if (fields['Au'] and fields['Ac']) or (fields['Bu'] and fields['Bc']):
+				return True
+		return False
+
+	def fields_for_mnem(self, mnem, operand_strings):
+		# TODO: Recognize valid cmpsel encodings including cursed ones
+		try:
+			return {'cc': self.minmax_to_cc[mnem]}
+		except KeyError:
+			return None
+
+	def fields_to_operands(self, fields):
+		operands = super().fields_to_operands(fields)
+		if self.is_cursed(fields):
+			# Insert the select operands to make a full cmpsel
+			operands[4:4] = [self.sel_a.decode(fields), self.sel_b.decode(fields)]
+		else:
+			# cc will be converted to mnemonic
+			del operands[0]
+		return operands
+
+	def fields_to_mnem_base(self, fields):
+		if self.is_cursed(fields):
+			return 'cmpsel'
+		return self.cc_to_minmax[fields['cc']]
+
+	pseudocode = '''
+	D = A cc B ? A : B
+	# Note: The LHS A and B are treated as CmpSrc, but the RHS are treated as SelSrc, so they may not actually be identical
+	'''
+
+@register
+class CmpSel8InstructionDesc(CmpSelInstructionBase):
+	def __init__(self):
+		super().__init__('cmpsel', size=8)
+		self.add_constant(16, 1, 1) # Length > 6
+		self.add_constant(33, 1, 0) # Length = 8
+		invert = {
+			'fgtn': '!fgtn',
+			'fltn': '!fltn',
+			'fgt':  '!fgt',
+			'flt':  '!flt',
+			'ugt':  'ule',
+			'ult':  'uge',
+			'sgt':  'sle',
+			'slt':  'sge',
+			'feq':  'fne',
+			'fge':  '!fge',
+			'fle':  '!fle',
+			'test': '!test',
+			'ieq':  'ine'
+		}
+		cc_to_name = {}
+		for k, v in CMPSEL_CC.items():
+			# Treat the 8-byte instruction as a cmov, which means Z turns into a negation of the cc
+			cc_to_name[k] = v
+			cc_to_name[k + 0x10] = invert[v]
+		self.add_operand(EnumDesc('cc', [
+			(48, 3, 'cc'),
+			(34, 1, 'ccx'),
+			(32, 1, 'Z'),
+		], None, cc_to_name))
+		self.add_operand(NewFloatDstDesc('D', l_off=3, s_off=17, u_off=54, h_off=60))
+		self.add_operand(CmpSrcDesc('A',  9, common_layout='A'))
+		self.add_operand(CmpSrcDesc('B', 25, common_layout='B'))
+		self.add_operand(SelSrcDesc('X', 41, common_layout='X'))
+		self.add_operand(WaitDesc('W', 61))
+
+	def fields_for_mnem(self, mnem, operand_strings):
+		if mnem == 'cmov':
+			return {}
+
+	def fields_to_mnem_base(self, fields):
+		return 'cmov'
+
+	pseudocode = '''
+	if Z == 0:
+		D = A cc B ? X : D
+	else:
+		D = A cc B ? D : X
+	'''
+
+@register
+class CmpSel10InstructionDesc(CmpSelInstructionBase):
+	def __init__(self):
+		super().__init__('cmpsel', size=10)
+		self.add_constant(16, 1, 1) # Length > 6
+		self.add_constant(32, 2, 0b10) # Length = 10
+		self.add_operand(EnumDesc('cc', [
+			(48, 3, 'cc'),
+			(34, 1, 'ccx'),
+		], None, CMPSEL_CC))
+		self.add_operand(NewFloatDstDesc('D', l_off=3, s_off=17, u_off=54, h_off=60))
+		self.add_operand(CmpSrcDesc('A',  9, common_layout='A', n_off=65))
+		self.add_operand(CmpSrcDesc('B', 25, common_layout='B'))
+		self.add_operand(SelSrcDesc('X', 41, common_layout='X'))
+		self.add_operand(SelSrcDesc('Y', 73, common_layout='Y'))
+		self.add_operand(WaitDesc('W', 61))
+
+	pseudocode = '''
+	D = A cc B ? X : Y
+	'''
+
+@register
+class CmpSel14InstructionDesc(CmpSelInstructionBase):
+	def __init__(self):
+		super().__init__('cmpsel', size=14)
+		self.add_constant(16, 1, 1) # Length > 6
+		self.add_constant(32, 2, 0b11) # Length = 14
+		self.add_operand(EnumDesc('cc', [
+			(48, 3, 'cc'),
+			(34, 1, 'ccx'),
+		], None, CMPSEL_CC))
+		self.add_operand(NewFloatDstDesc('D', l_off=3, s_off=17, u_off=54, h_off=60, z_off=82))
+		self.add_operand(CmpSrcDesc('A',  9, common_layout='A', a_off=96, n_off=65))
+		self.add_operand(CmpSrcDesc('B', 25, common_layout='B', a_off=97))
+		self.add_operand(SelSrcDesc('X', 41, common_layout='X'))
+		self.add_operand(SelSrcDesc('Y', 73, common_layout='Y'))
+		self.add_operand(WaitDesc('W', 61, 93))
+
+	pseudocode = '''
+	D = A cc B ? X : Y
+	'''
+
 @register
 class StopInstructionDesc(InstructionDesc):
 	documentation_begin_group = 'Other Instructions'
