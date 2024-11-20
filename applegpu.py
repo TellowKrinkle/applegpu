@@ -141,6 +141,12 @@ class Register(Operand):
 			return '%s(%d, flags=%r)' % (clsname, self.n, self.flags)
 		return '%s(%d)' % (clsname, self.n)
 
+	def is_int(self):
+		return SIGN_EXTEND_FLAG in self.flags
+
+	def is_float(self):
+		return NEGATE_FLAG in self.flags or ABS_FLAG in self.flags
+
 class BaseReg(Register):
 	pass
 
@@ -3026,12 +3032,62 @@ class CmpSrcDesc(NewFloatSrcDesc):
 	def is_int(self, fields):
 		return (fields['cc'] & 4) != 0
 
+	def encode_string(self, fields, opstr):
+		reg = try_parse_register(opstr)
+		if reg:
+			if reg.is_int() and not self.is_int(fields):
+				raise Exception(f'register {opstr} incompatible with floating point compare {CMPSEL_CC[fields['cc']]}')
+			if reg.is_float() and self.is_int(fields):
+				raise Exception(f'register {opstr} incompatible with integer compare {CMPSEL_CC[fields['cc']]}')
+			self.encode_reg(fields, reg)
+		elif opstr in float_immediate_lookup:
+			if self.is_int(fields):
+				raise Exception(f'float immediate {opstr} incompatible with integer compare {CMPSEL_CC[fields['cc']]}')
+			self.encode_imm(fields, float_immediate_lookup[opstr])
+		else:
+			imm = try_parse_integer(opstr)
+			if imm is not None:
+				if not self.is_int(fields):
+					raise Exception(f'integer immediate {opstr} incompatible with float point compare {CMPSEL_CC[fields['cc']]}')
+				self.encode_imm(fields, imm)
+			else:
+				raise Exception(f'invalid CmpSrcDesc {opstr}')
+
 class SelSrcDesc(NewFloatSrcDesc):
 	documentation_extra_arguments = ['Di', 'Ds']
 	def is_int(self, fields):
 		return fields['Di']
 	def get_size(self, fields):
 		return fields['Ds']
+
+	def try_set_is_int(self, fields, is_int):
+		if 'Di' in fields:
+			if fields['Di'] != is_int:
+				raise Exception(f'SelSrcDesc inputs disagree on what Di should be')
+		else:
+			fields['Di'] = is_int
+
+	def encode_string(self, fields, opstr):
+		reg = try_parse_register(opstr)
+		if reg:
+			if reg.is_int():
+				self.try_set_is_int(fields, 1)
+			if reg.is_float():
+				self.try_set_is_int(fields, 0)
+			if (reg.get_bit_size() == 16) != (not fields['Ds']):
+				raise Exception(f"Size of {opstr} doesn't match size of output")
+			self.encode_reg(fields, reg)
+		elif opstr in float_immediate_lookup:
+			self.try_set_is_int(fields, 0)
+			self.encode_imm(fields, float_immediate_lookup[opstr])
+		else:
+			imm = try_parse_integer(opstr)
+			if imm is not None:
+				self.try_set_is_int(fields, 1)
+				self.encode_imm(fields, imm)
+			else:
+				raise Exception(f'invalid CmpSrcDesc {opstr}')
+		del fields[self.name + 's']
 
 CMPSEL_CC = {
 	0x0: 'fgtn',
@@ -3058,7 +3114,6 @@ class CmpSelInstructionBase(MaskedInstructionDesc):
 		self.add_constant(0, 3, 0b010)
 		self.add_field(18, 1, 'Di') # Is output (and therefore sel inputs) integer?
 
-@register
 class CmpSel6InstructionDesc(CmpSelInstructionBase):
 	documentation_begin_group = 'Compare-Select Instructions'
 	cc_to_minmax = {
@@ -3099,13 +3154,6 @@ class CmpSel6InstructionDesc(CmpSelInstructionBase):
 				return True
 		return False
 
-	def fields_for_mnem(self, mnem, operand_strings):
-		# TODO: Recognize valid cmpsel encodings including cursed ones
-		try:
-			return {'cc': self.minmax_to_cc[mnem]}
-		except KeyError:
-			return None
-
 	def fields_to_operands(self, fields):
 		operands = super().fields_to_operands(fields)
 		if self.is_cursed(fields):
@@ -3121,37 +3169,89 @@ class CmpSel6InstructionDesc(CmpSelInstructionBase):
 			return 'cmpsel'
 		return self.cc_to_minmax[fields['cc']]
 
+	def can_alias_fields(self, fields, cmp, sel):
+		if fields[cmp] != fields[sel]:
+			return False
+		if fields[cmp + 'h'] != fields[sel + 'h']:
+			return False
+		if fields[cmp + 's'] != fields['Ds']:
+			return False
+		if fields[cmp + 'u'] != fields[sel + 'u']:
+			return False
+		return True
+
+	def remove_fields(self, fields, sel):
+		del fields[sel]
+		del fields[sel + 'h']
+		del fields[sel + 'u']
+		del fields[sel + 'c']
+		del fields[sel + 'd']
+
+	def remove_x_y_wm(self, fields):
+		self.remove_fields(fields, 'X')
+		self.remove_fields(fields, 'Y')
+		del fields['Yn']
+		del fields['Wm']
+
+	def can_encode_fields(self, fields):
+		if fields['Wm'].bit_count() > 1:
+			return False
+		if not self.can_alias_fields(fields, 'A', 'X'):
+			return False
+		if not self.can_alias_fields(fields, 'B', 'Y'):
+			return False
+		if fields['Bn'] != fields['Yn']:
+			# If we can set Di, we can prevent the n flag from doing anything to Y
+			if fields['Yn'] or not fields.get('Di', 1):
+				return False
+		fields = dict(fields)
+		self.remove_x_y_wm(fields)
+		return super().can_encode_fields(fields)
+
+	def encode_fields(self, fields):
+		fields['W'] = fields['Wm'].bit_length()
+		fields['Ac'] |= fields['Xc']
+		fields['Ad'] |= fields['Xd']
+		fields['Bc'] |= fields['Yc']
+		fields['Bd'] |= fields['Yd']
+		if 'Di' not in fields:
+			fields['Di'] = fields['Bn'] and not fields['Yn']
+		self.remove_x_y_wm(fields)
+		return super().encode_fields(fields)
+
 	pseudocode = '''
 	D = A cc B ? A : B
 	# Note: The LHS A and B are treated as CmpSrc, but the RHS are treated as SelSrc, so they may not actually be identical
 	'''
 
-@register
 class CmpSel8InstructionDesc(CmpSelInstructionBase):
+	invert = {
+		'fgtn': '!fgtn',
+		'fltn': '!fltn',
+		'fgt':  '!fgt',
+		'flt':  '!flt',
+		'ugt':  'ule',
+		'ult':  'uge',
+		'sgt':  'sle',
+		'slt':  'sge',
+		'feq':  'fne',
+		'fge':  '!fge',
+		'fle':  '!fle',
+		'test': '!test',
+		'ieq':  'ine'
+	}
+	invert_invert = { v: k for k, v in invert.items() }
+
 	def __init__(self):
 		super().__init__('cmpsel', size=8)
 		self.add_constant(16, 1, 1) # Length > 6
 		self.add_constant(33, 1, 0) # Length = 8
-		invert = {
-			'fgtn': '!fgtn',
-			'fltn': '!fltn',
-			'fgt':  '!fgt',
-			'flt':  '!flt',
-			'ugt':  'ule',
-			'ult':  'uge',
-			'sgt':  'sle',
-			'slt':  'sge',
-			'feq':  'fne',
-			'fge':  '!fge',
-			'fle':  '!fle',
-			'test': '!test',
-			'ieq':  'ine'
-		}
+
 		cc_to_name = {}
 		for k, v in CMPSEL_CC.items():
 			# Treat the 8-byte instruction as a cmov, which means Z turns into a negation of the cc
 			cc_to_name[k] = v
-			cc_to_name[k + 0x10] = invert[v]
+			cc_to_name[k + 0x10] = self.invert[v]
 		self.add_operand(EnumDesc('cc', [
 			(48, 3, 'cc'),
 			(34, 1, 'ccx'),
@@ -3163,12 +3263,54 @@ class CmpSel8InstructionDesc(CmpSelInstructionBase):
 		self.add_operand(SelSrcDesc('X', 41, common_layout='X'))
 		self.add_operand(WaitDesc('W', 61))
 
-	def fields_for_mnem(self, mnem, operand_strings):
-		if mnem == 'cmov':
-			return {}
-
 	def fields_to_mnem_base(self, fields):
 		return 'cmov'
+
+	def can_alias_field(self, fields, field):
+		# Dst can't be constant, negated, or abs'd
+		if fields[field + 'u'] or fields[field + 'n'] or fields[field + 'a']:
+			return False
+		# Ignore discard, if we're writing to it it'll be discarded regardless of the flag
+		# Ignore cache flag as well, we can merge those
+		return (fields[field] | (fields[field + 'h'] << 7)) == fields['D']
+
+	def remove_y_wm(self, fields):
+		del fields['Y']
+		del fields['Yh']
+		del fields['Yc']
+		del fields['Yd']
+		del fields['Yu']
+		del fields['Yn']
+		del fields['Ya']
+		del fields['Wm']
+
+	def can_encode_fields(self, fields):
+		if fields['Wm'].bit_count() > 1:
+			return False
+		if not self.can_alias_field(fields, 'X') and not self.can_alias_field(fields, 'Y'):
+			return False
+		fields = dict(fields)
+		self.remove_y_wm(fields)
+		return super().can_encode_fields(fields)
+
+	def encode_fields(self, fields):
+		fields['W'] = fields['Wm'].bit_length()
+		if self.can_alias_field(fields, 'Y'):
+			fields['Dc'] |= fields['Yc']
+		else:
+			fields['Dc'] |= fields['Xc']
+			fields['cc'] |= 0x10
+			fields['X']  = fields['Y']
+			fields['Xh'] = fields['Yh']
+			fields['Xc'] = fields['Yc']
+			fields['Xd'] = fields['Yd']
+			fields['Xu'] = fields['Yu']
+			fields['Xn'] = fields['Yn']
+			fields['Xa'] = fields['Ya']
+		self.remove_y_wm(fields)
+		if 'Di' not in fields:
+			fields['Di'] = 0
+		return super().encode_fields(fields)
 
 	pseudocode = '''
 	if Z == 0:
@@ -3177,7 +3319,6 @@ class CmpSel8InstructionDesc(CmpSelInstructionBase):
 		D = A cc B ? D : X
 	'''
 
-@register
 class CmpSel10InstructionDesc(CmpSelInstructionBase):
 	def __init__(self):
 		super().__init__('cmpsel', size=10)
@@ -3194,11 +3335,24 @@ class CmpSel10InstructionDesc(CmpSelInstructionBase):
 		self.add_operand(SelSrcDesc('Y', 73, common_layout='Y'))
 		self.add_operand(WaitDesc('W', 61))
 
+	def can_encode_fields(self, fields):
+		if fields['Wm'].bit_count() > 1:
+			return False
+		fields = dict(fields)
+		del fields['Wm']
+		return super().can_encode_fields(fields)
+
+	def encode_fields(self, fields):
+		fields['W'] = fields['Wm'].bit_length()
+		del fields['Wm']
+		if 'Di' not in fields:
+			fields['Di'] = 0
+		return super().encode_fields(fields)
+
 	pseudocode = '''
 	D = A cc B ? X : Y
 	'''
 
-@register
 class CmpSel14InstructionDesc(CmpSelInstructionBase):
 	def __init__(self):
 		super().__init__('cmpsel', size=14)
@@ -3215,9 +3369,40 @@ class CmpSel14InstructionDesc(CmpSelInstructionBase):
 		self.add_operand(SelSrcDesc('Y', 73, common_layout='Y'))
 		self.add_operand(WaitDesc('W', 61, 93))
 
+	def encode_fields(self, fields):
+		if 'Di' not in fields:
+			fields['Di'] = 0
+		return super().encode_fields(fields)
+
 	pseudocode = '''
 	D = A cc B ? X : Y
 	'''
+
+@register
+class CmpSelInstructionDesc(InstructionGroup):
+	def __init__(self):
+		super().__init__('cmpsel', [
+			CmpSel6InstructionDesc(),
+			CmpSel8InstructionDesc(),
+			CmpSel10InstructionDesc(),
+			CmpSel14InstructionDesc(),
+		])
+
+	def fields_for_mnem(self, mnem, operand_strings):
+		if mnem in CmpSel6InstructionDesc.minmax_to_cc:
+			cc = CmpSel6InstructionDesc.minmax_to_cc[mnem]
+			operand_strings.insert(0, CMPSEL_CC[cc])
+			operand_strings[4:4] = operand_strings[2:4]
+			return {}
+		elif mnem == 'cmov':
+			if operand_strings[0] in CmpSel8InstructionDesc.invert:
+				operand_strings.insert(5, operand_strings[1])
+			else:
+				operand_strings[0] = CmpSel8InstructionDesc.invert_invert[operand_strings[0]]
+				operand_strings.insert(4, operand_strings[1])
+			return {}
+		elif mnem == 'cmpsel':
+			return {}
 
 @register
 class StopInstructionDesc(InstructionDesc):
