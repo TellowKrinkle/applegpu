@@ -472,6 +472,7 @@ class InstructionDesc:
 		self.ordered_operands = []
 		self.operands = {}
 		self.constants = []
+		self.implicit_fields = {}
 
 		self.merged_fields = []
 
@@ -502,12 +503,15 @@ class InstructionDesc:
 		shift = 0
 		for start, size, subname in subfields:
 			self.add_raw_field(start, size, subname)
-			pairs.append((subname, shift))
+			pairs.append((subname, shift, size))
 			shift += size
 		self.merged_fields.append((name, pairs))
 
 	def add_field(self, start, size, name):
 		self.add_merged_field(name, [(start, size, name)])
+
+	def add_implicit_field(self, name, value):
+		self.implicit_fields[name] = value
 
 	def add_suboperand(self, operand):
 		# a "suboperand" is an operand which does not appear in the operand list,
@@ -516,6 +520,8 @@ class InstructionDesc:
 			self.add_field(start, size, name)
 		for name, subfields in operand.merged_fields:
 			self.add_merged_field(name, subfields)
+		for name, value in operand.implicit_fields:
+			self.add_implicit_field(name, value)
 		self.operands[operand.name] = operand
 
 	def add_operand(self, operand):
@@ -572,7 +578,7 @@ class InstructionDesc:
 		assert self.matches(encoded)
 		encoded = self.mask_instr(encoded)
 
-		return encoded
+		return self.to_bytes(encoded)
 
 	def encode_raw_fields(self, fields):
 		assert sorted(lookup.keys()) == sorted(name for start, size, name in self.fields)
@@ -580,22 +586,18 @@ class InstructionDesc:
 
 	def patch_fields(self, encoded, fields):
 		mf_lookup = dict(self.merged_fields)
-		size_lookup = {name: size for start, size, name in self.fields}
 
 		raw_fields = {}
-		for name, value in fields.items():
-			for subname, shift in mf_lookup[name]:
-				mask = (1 << size_lookup[subname]) - 1
+		for name, field in self.merged_fields:
+			value = fields[name]
+			for subname, shift, size in field:
+				mask = (1 << size) - 1
 				raw_fields[subname] = (value >> shift) & mask
 
 		return self.patch_raw_fields(encoded, raw_fields)
 
 	def encode_fields(self, fields):
-		if sorted(fields.keys()) != sorted(name for name, subfields in self.merged_fields):
-			print(sorted(fields.keys()))
-			print(sorted(name for name, subfields in self.merged_fields))
-			assert False
-
+		assert self._can_encode_fields(fields, print_err=True)
 		return self.patch_fields(self.bits, fields)
 
 	def to_bytes(self, instr):
@@ -606,7 +608,7 @@ class InstructionDesc:
 		fields = []
 		for name, subfields in self.merged_fields:
 			value = 0
-			for subname, shift in subfields:
+			for subname, shift, size in subfields:
 				value |= raw[subname] << shift
 			fields.append((name, value))
 		return fields
@@ -670,9 +672,47 @@ class InstructionDesc:
 				if insert:
 					opstrs.insert(i, insert)
 			else:
-				insert = opcode.encode_insert_optional_default('')
+				insert = operand.encode_insert_optional_default('')
 				opstrs.append(insert or '')
 		return opstrs
+
+	def _can_encode_fields(self, fields, print_err=False):
+		encodable = {name: parts for name, parts in self.merged_fields}
+		for k, v in fields.items():
+			try:
+				size = sum([x[2] for x in encodable[k]])
+				if v >= (1 << size):
+					if print_err:
+						print(f"{type(self).__name__} can't encode {k} of {v} in {size} bits")
+					return False
+			except KeyError:
+				if v != self.implicit_fields.get(k, 0):
+					if print_err:
+						print(f"{type(self).__name__} missing field to encode {k} of {v}")
+					return False
+		return True
+
+	def can_encode_fields(self, fields):
+		return self._can_encode_fields(fields)
+
+class InstructionGroup:
+	def __init__(self, name, members):
+		self.name = name
+		self.members = members
+		# The last instruction in the group should have the most complete operand list, use that
+		self.ordered_operands = members[-1].ordered_operands
+
+	def encode_fields(self, fields):
+		for member in self.members[:-1]:
+			if member.can_encode_fields(fields):
+				return member.encode_fields(fields)
+		return self.members[-1].encode_fields(fields)
+
+	def fields_for_mnem(self, mnem, operand_strings):
+		return self.members[-1].fields_for_mnem(mnem, operand_strings)
+
+	def rewrite_operands_strings(self, mnem, opstrs):
+		return self.members[-1].rewrite_operands_strings(mnem, opstrs)
 
 documentation_operands = []
 
@@ -685,12 +725,16 @@ class OperandDesc:
 		self.name = name
 		self.fields = []
 		self.merged_fields = []
+		self.implicit_fields = []
 
 	def add_field(self, start, size, name):
 		self.fields.append((start, size, name))
 
 	def add_merged_field(self, name, subfields):
 		self.merged_fields.append((name, subfields))
+
+	def add_implicit_field(self, name, value):
+		self.implicit_fields.append((name, value))
 
 	def decode(self, fields):
 		return '<TODO>'
@@ -777,6 +821,27 @@ class WaitDesc(OperandDesc):
 	def encode_insert_optional_default(self, opstr):
 		if self.use_label and not opstr.startswith('wait '):
 			return 'wait none'
+
+	def encode_string(self, fields, opstr):
+		name = self.name + ('m' if self.is_mask else '')
+		if self.use_label:
+			assert(opstr.startswith('wait '))
+			opstr = opstr[5:]
+		if opstr == 'none':
+			fields[name] = 0
+		elif self.is_mask:
+			value = 0
+			try:
+				for idx in opstr:
+					value |= 1 << int(idx)
+			except ValueError:
+				raise Exception(f'invalid wait mask {opstr}')
+			fields[name] = value
+		else:
+			idx = try_parse_integer(opstr)
+			if idx is None or idx >= 6:
+				raise Exception(f'invalid single wait {opstr}')
+			fields[name] = idx + 1
 
 class AbstractDstOperandDesc(OperandDesc):
 	def set_thread(self, fields, corestate, thread, result):
@@ -2375,11 +2440,18 @@ class ExReg16Desc(OperandDesc):
 
 
 instruction_descriptors = []
+instruction_descriptors_assemble = []
 _instruction_descriptor_names = set()
 def register(cls):
-	assert cls.__name__ not in _instruction_descriptor_names, 'duplicate %r' % (cls.__name__,)
-	_instruction_descriptor_names.add(cls.__name__)
-	instruction_descriptors.append(cls())
+	group = [cls()]
+	if isinstance(group[0], InstructionGroup):
+		instruction_descriptors_assemble.append(group[0])
+		group = group[0].members
+	for member in group:
+		name = type(member).__name__
+		assert name not in _instruction_descriptor_names, 'duplicate %r' % (name,)
+		_instruction_descriptor_names.add(name)
+		instruction_descriptors.append(member)
 	return cls
 
 class MaskedInstructionDesc(InstructionDesc):
@@ -2533,6 +2605,8 @@ class NewFloatSrcDesc(AbstractSrcOperandDesc):
 		self.add_field(d_off, 1, self.name + 'd')
 		if s_off is not None:
 			self.add_field(s_off, 1, self.name + 's')
+		else:
+			self.add_implicit_field(self.name + 's', 1)
 		if u_off is not None:
 			self.add_field(u_off, 1, self.name + 'u')
 		if n_off is not None:
@@ -2591,12 +2665,67 @@ class NewFloatSrcDesc(AbstractSrcOperandDesc):
 
 		return r
 
+	def encode_reg(self, fields, reg):
+		u16 = isinstance(reg, UReg16)
+		u32 = isinstance(reg, UReg32)
+		r16 = isinstance(reg, Reg16)
+		r32 = isinstance(reg, Reg32)
+		u = u16 or u32
+		s = u32 or r32
+		c = 0
+		h = 0
+		d = 0
+		n = NEGATE_FLAG in reg.flags or SIGN_EXTEND_FLAG in reg.flags
+		a = ABS_FLAG in reg.flags
+		value = reg.n
+		if s:
+			value <<= 1
+		if u:
+			h = (value >> 8) & 1
+			d = (value >> 7) & 1
+		else:
+			h = (value >> 7) & 1
+			d = DISCARD_FLAG in reg.flags
+			c = CACHE_FLAG in reg.flags
+		fields[self.name] = value & 0x7f
+		fields[self.name + 'u'] = u
+		fields[self.name + 's'] = s
+		fields[self.name + 'c'] = c
+		fields[self.name + 'h'] = h
+		fields[self.name + 'd'] = d
+		fields[self.name + 'n'] = n
+		fields[self.name + 'a'] = a
+
+	def encode_imm(self, fields, imm):
+		fields[self.name] = imm & 0x7f
+		fields[self.name + 'd'] = (imm >> 7) & 1
+		fields[self.name + 'u'] = 1
+		fields[self.name + 's'] = 0
+		fields[self.name + 'c'] = 1
+		fields[self.name + 'h'] = 0
+		fields[self.name + 'n'] = 0
+		fields[self.name + 'a'] = 0
+
+	def encode_string(self, fields, opstr):
+		reg = try_parse_register(opstr)
+		if reg:
+			self.encode_reg(fields, reg)
+		elif opstr in float_immediate_lookup:
+			self.encode_imm(fields, float_immediate_lookup[opstr])
+		else:
+			raise Exception(f'invalid FloatSrcDesc {opstr}')
+
 class FFMA4BDesc(NewFloatSrcDesc):
 	def get_size(self, fields):
 		if fields['Z']:
 			return 1
 		else:
 			return fields[self.name + 's']
+
+	def encode_reg(self, fields, reg):
+		res = super().encode_reg(fields, reg)
+		if fields['Z']:
+			fields[self.name + 's'] = 0
 
 class NewFloatDstDesc(AbstractDstOperandDesc):
 	def __init__(self, name, bit_off=4, l_off=None, x_off=22, h_off=None, z_off=None, s_off=3, c_off=21, u_off=None):
@@ -2646,6 +2775,30 @@ class NewFloatDstDesc(AbstractDstOperandDesc):
 
 		return r
 
+	def encode_reg(self, fields, reg):
+		u16 = isinstance(reg, UReg16)
+		u32 = isinstance(reg, UReg32)
+		r16 = isinstance(reg, Reg16)
+		r32 = isinstance(reg, Reg32)
+		u = u16 or u32
+		s = u32 or r32
+		value = reg.n
+		if s:
+			value <<= 1
+		fields[self.name] = value & 0xff
+		fields[self.name + 'c'] = CACHE_FLAG in reg.flags
+		fields[self.name + 'u'] = u
+		fields[self.name + 's'] = s
+		fields[self.name + 'z'] = value >> 8
+
+	def encode_string(self, fields, opstr):
+		reg = try_parse_register(opstr)
+		if reg:
+			self.encode_reg(fields, reg)
+		else:
+			raise Exception(f'invalid FloatDstDesc {opstr}')
+
+
 class FFMAInstructionDescBase(MaskedInstructionDesc):
 	def fields_to_mnem_suffix(self, fields):
 		suffix = ''
@@ -2653,23 +2806,32 @@ class FFMAInstructionDescBase(MaskedInstructionDesc):
 		if fields.get('S', 0):
 			suffix += '.sat'
 
-		#wm = fields.get('Wm', 0)
-		#for i in range(7):
-		#	if wm & (1<<i):
-		#		suffix += f'.wait{i}'
-
-		#w = fields.get('W', 0)
-		#if w:
-		#	suffix += f'.wait{w-1}'
-
 		if fields.get('q0', 0):
 			suffix += '.first'
 
 		return suffix
 
+	def fields_for_mnem(self, mnem, operand_strings):
+		S = 0
+		suffixes = {'sat': 'S', 'first': 'q0'}
+		has = set()
+		while True:
+			rest, _, suffix = mnem.rpartition('.')
+			if rest and suffix in fields:
+				has.add(suffixes[suffix])
+				mnem = rest
+			else:
+				break
+		fields = self.fields_for_mnem_base(mnem)
+		if fields is not None:
+			for suffix in suffixes.values():
+				fields[suffix] = suffix in has
+		return fields
 
-@register
-class FFMA4InstructionDesc(MaskedInstructionDesc):
+	def fields_for_mnem_base(self, mnem):
+		if mnem == self.name: return {}
+
+class FFMA4InstructionDesc(FFMAInstructionDescBase):
 	documentation_begin_group = 'Floating-Point Arithmetic'
 	def __init__(self):
 		super().__init__('ffma', size=4)
@@ -2692,6 +2854,52 @@ class FFMA4InstructionDesc(MaskedInstructionDesc):
 			operands.insert(3, operands[0])
 		return operands
 
+	def can_alias_field(self, fields, field):
+		if field == 'B' and not fields['Cs']:
+			return False # If Z = 1, B (which will contain the C param) must be 32-bit
+		# Ignore discard, if we're writing to it it'll be discarded regardless of the flag
+		# Ignore cache flag as well, we can merge those
+		return (fields[field] == fields['D'] and fields[field + 's'] == fields['Ds'])
+
+	def remove_c(self, fields):
+		del fields['C']
+		del fields['Cs']
+		del fields['Cc']
+		del fields['Cd']
+
+	def can_encode_fields(self, fields):
+		if (fields['A'] & 1) or (fields['B'] & 1) or (fields['C'] & 1) or (fields['D'] & 1):
+			return False
+		if self.can_alias_field(fields, 'B'):
+			fields = dict(fields)
+			# Copy C onto B, the flag bits will validate fine regardless so we can skip those
+			fields['B'] = fields['C']
+		elif self.can_alias_field(fields, 'C'):
+			fields = dict(fields)
+		else:
+			return False
+
+		self.remove_c(fields)
+		return super().can_encode_fields(fields)
+
+	def encode_fields(self, fields):
+		if self.can_alias_field(fields, 'B'):
+			fields['Z'] = 1
+			fields['Dc'] |= fields['Bc']
+			fields['B']  = fields['C']
+			fields['Bs'] = fields['Cs']
+			fields['Bc'] = fields['Cc']
+			fields['Bd'] = fields['Cd']
+		else:
+			fields['Z'] = 0
+			fields['Dc'] |= fields['Cc']
+		# This was encoded by FFMA10, so we need to shift the register numbers since we have no l bits
+		fields['A'] >>= 1
+		fields['B'] >>= 1
+		fields['D'] >>= 1
+		self.remove_c(fields)
+		return super().encode_fields(fields)
+
 	pseudocode = '''
 	if Z == 1:
 		# B is 32-bit, Bs is ignored
@@ -2700,8 +2908,7 @@ class FFMA4InstructionDesc(MaskedInstructionDesc):
 		D = A * B + D
 	'''
 
-@register
-class FFMA6InstructionDesc(MaskedInstructionDesc):
+class FFMA6InstructionDesc(FFMAInstructionDescBase):
 	def __init__(self):
 		super().__init__('ffma', size=6)
 		self.add_constant(0, 3, 0b001)
@@ -2738,7 +2945,6 @@ class FFMA6InstructionDesc(MaskedInstructionDesc):
 			d_off=39,
 		))
 
-@register
 class FFMA8InstructionDesc(FFMAInstructionDescBase):
 	def __init__(self):
 		super().__init__('ffma', size=8)
@@ -2756,9 +2962,19 @@ class FFMA8InstructionDesc(FFMAInstructionDescBase):
 		#self.add_field(61, 3, 'W') # wait
 		self.add_operand(WaitDesc('W', 61))
 
-@register
-class FFMAInstructionDesc(FFMAInstructionDescBase):
+	def can_encode_fields(self, fields):
+		if fields['Wm'].bit_count() > 1:
+			return False
+		fields = dict(fields)
+		del fields['Wm']
+		return super().can_encode_fields(fields)
 
+	def encode_fields(self, fields):
+		fields['W'] = fields['Wm'].bit_length()
+		del fields['Wm']
+		return super().encode_fields(fields)
+
+class FFMA10InstructionDesc(FFMAInstructionDescBase):
 	def __init__(self):
 		super().__init__('ffma', size=(10,12), length_bit_pos=32)
 		self.add_constant(0, 3, 0b001)
@@ -2794,6 +3010,16 @@ class FFMAInstructionDesc(FFMAInstructionDescBase):
 
 	TODO: undiscovered bits, verification
 	'''
+
+@register
+class FFMAInstructionDesc(InstructionGroup):
+	def __init__(self):
+		super().__init__('ffma', [
+			FFMA4InstructionDesc(),
+			FFMA6InstructionDesc(),
+			FFMA8InstructionDesc(),
+			FFMA10InstructionDesc(),
+		])
 
 class CmpSrcDesc(NewFloatSrcDesc):
 	documentation_extra_arguments = ['cc']

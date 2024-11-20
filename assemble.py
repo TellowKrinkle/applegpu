@@ -3,7 +3,7 @@ import applegpu
 import disassemble
 
 def begin_encoding(mnem, operand_strings):
-	for o in applegpu.instruction_descriptors:
+	for o in applegpu.instruction_descriptors_assemble:
 		fields = o.fields_for_mnem(mnem, operand_strings)
 		if fields is not None:
 			return o, fields
@@ -36,9 +36,7 @@ def assemble_line(line):
 	for opdesc in idesc.ordered_operands[len(operand_strings):]:
 		opdesc.encode_string(fields, '')
 
-	n = idesc.encode_fields(fields)
-
-	return idesc.to_bytes(n)
+	return idesc.encode_fields(fields)
 
 def assemble_multiline(lines, print_asm=False):
 	seen_labels = {}
