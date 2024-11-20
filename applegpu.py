@@ -3178,6 +3178,9 @@ class CmpSel6InstructionDesc(CmpSelInstructionBase):
 			return False
 		if fields[cmp + 'u'] != fields[sel + 'u']:
 			return False
+		# Usually we can combine cache flags, but if u, cache flag is actually an imm flag
+		if fields[cmp + 'u'] and (fields[cmp + 'c'] != fields[sel + 'c']):
+			return False
 		return True
 
 	def remove_fields(self, fields, sel):
