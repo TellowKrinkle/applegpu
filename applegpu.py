@@ -3141,8 +3141,10 @@ class CmpSel6InstructionDesc(CmpSelInstructionBase):
 		self.sel_b = SelSrcDesc('B', 25, common_layout='B', l_off=36)
 
 	def is_cursed(self, fields):
+		a_imm = fields['Au'] and fields['Ac']
+		b_imm = fields['Bu'] and fields['Bc']
 		# Input and output size doesn't match
-		if fields['As'] != fields['Ds'] or fields['Bs'] != fields['Ds']:
+		if (fields['As'] != fields['Ds'] and not a_imm) or (fields['Bs'] != fields['Ds'] and not b_imm):
 			return True
 		# Things can go funny if cmp and sel integer-ness don't match
 		if ((fields['cc'] & 4) != 0) != (fields['Di'] != 0):
@@ -3150,7 +3152,7 @@ class CmpSel6InstructionDesc(CmpSelInstructionBase):
 			if fields['Bn']:
 				return True
 			# Immediates are interpreted differently for integer fields
-			if (fields['Au'] and fields['Ac']) or (fields['Bu'] and fields['Bc']):
+			if a_imm or b_imm:
 				return True
 		return False
 
