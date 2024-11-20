@@ -2495,7 +2495,6 @@ class NewFloatSrcDesc(AbstractSrcOperandDesc):
 
 	def __init__(self, name, bit_off, l_off=None, c_off=None, d_off=None, common_layout=None, s_off=None, h_off=None, u_off=None, n_off=None, a_off=None, u_default=0):
 		super().__init__(name)
-		self.value_shift = 1 if l_off is None else 0
 		if common_layout is not None:
 			c_off = c_off or bit_off + 6
 			if s_off is None and (common_layout == 'A' or common_layout == 'B'):
@@ -2519,6 +2518,7 @@ class NewFloatSrcDesc(AbstractSrcOperandDesc):
 				n_off = n_off or bit_off - 5
 				a_off = a_off or bit_off - 6
 
+		self.value_shift = 1 if l_off is None else 0
 		if l_off is not None:
 			self.add_merged_field(self.name, [
 				(l_off, 1, self.name + 'l'),
