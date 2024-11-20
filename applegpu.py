@@ -1863,14 +1863,15 @@ class MemoryIndexDesc(OperandDesc):
 		self.is_load = is_load
 		self.add_merged_field(self.name, [
 			(39, 1, self.name + 'l'),
-			(40, 7 if is_load else 8, self.name),
+			(40, 7, self.name),
 		])
 		if is_load:
 			self.add_field(47, 1, self.name + 'd')
-			self.add_field(48, 5, self.name + 'x')
+			self.add_field(48, 1, self.name + 'z')
 		else:
+			self.add_field(47, 1, self.name + 'z')
 			self.add_field(48, 1, self.name + 'd')
-			self.add_field(49, 4, self.name + 'x')
+		self.add_field(49, 4, self.name + 'x')
 		self.add_field(53, 1, self.name + 's')
 		self.add_field(54, 1, self.name + 'h')
 		self.add_field(sx_off, 1, self.name + 'sx')
@@ -1882,6 +1883,7 @@ class MemoryIndexDesc(OperandDesc):
 		discard = fields[self.name + 'd']
 		size    = fields[self.name + 's']
 		sx      = fields[self.name + 'sx']
+		z       = fields[self.name + 'z']
 		x       = fields[self.name + 'x']
 		h       = fields[self.name + 'h']
 
@@ -1904,9 +1906,9 @@ class MemoryIndexDesc(OperandDesc):
 		else:
 			# Same bits either way, but the fields are in different places for register encoding, so...
 			if self.is_load:
-				return value + (discard << 8) + (x <<  9) + (size << 14) + (h << 15)
+				return value + (discard << 8) + (z << 9) + (x << 10) + (size << 14) + (h << 15)
 			else:
-				return value + (discard << 9) + (x << 10) + (size << 14) + (h << 15)
+				return value + (z << 8) + (discard << 9) + (x << 10) + (size << 14) + (h << 15)
 
 		if sx:
 			reg.flags.append(SIGN_EXTEND_FLAG)
@@ -2777,10 +2779,12 @@ class FFMAInstructionDesc(FFMAInstructionDescBase):
 	'''
 
 class CmpSrcDesc(NewFloatSrcDesc):
+	documentation_extra_arguments = ['cc']
 	def is_int(self, fields):
 		return (fields['cc'] & 4) != 0
 
 class SelSrcDesc(NewFloatSrcDesc):
+	documentation_extra_arguments = ['Di', 'Ds']
 	def is_int(self, fields):
 		return fields['Di']
 	def get_size(self, fields):
