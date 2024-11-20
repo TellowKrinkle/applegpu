@@ -664,6 +664,14 @@ class InstructionDesc:
 			return {}
 
 	def rewrite_operands_strings(self, mnem, opstrs):
+		for i, operand in enumerate(self.ordered_operands):
+			if i < len(opstrs):
+				insert = operand.encode_insert_optional_default(opstrs[i])
+				if insert:
+					opstrs.insert(i, insert)
+			else:
+				insert = opcode.encode_insert_optional_default('')
+				opstrs.append(insert or '')
 		return opstrs
 
 documentation_operands = []
@@ -690,6 +698,10 @@ class OperandDesc:
 	def get_bit_size(self, fields):
 		r = self.decode(fields)
 		return r.get_bit_size()
+
+	# For optional operands, return an element to insert if operand isn't of the right type
+	def encode_insert_optional_default(self, opstr):
+		return None
 
 def add_dest_hint_modifier_m3(reg, cache):
 	if cache:
@@ -761,6 +773,10 @@ class WaitDesc(OperandDesc):
 				if value & (1 << i):
 					res += str(i)
 		return res
+
+	def encode_insert_optional_default(self, opstr):
+		if self.use_label and not opstr.startswith('wait '):
+			return 'wait none'
 
 class AbstractDstOperandDesc(OperandDesc):
 	def set_thread(self, fields, corestate, thread, result):
@@ -1594,15 +1610,16 @@ class ShiftDesc(OperandDesc):
 		return 'lsl %d' % (shift) if shift else ''
 
 	def encode_string(self, fields, opstr):
-		if opstr == '':
-			s = 0
-		elif opstr.startswith('lsl '):
-			s = try_parse_integer(opstr[4:])
-			if s is None:
-				raise Exception('invalid ShiftDesc %r' % (opstr,))
-		else:
-			raise Exception('invalid ShiftDesc %r' % (opstr,))
+		assert(opstr.startswith('lsl ')) # If not, we should have inserted an 'lsl 0' in encode_insert_optional_default
+		try:
+			fields['s'] = int(opstr[4:])
+		except ValueError:
+			raise Exception(f'invalid ShiftDesc {opstr}')
 		fields['s'] = s
+
+	def encode_insert_optional_default(self, opstr):
+		if not opstr.startswith('lsl '):
+			return 'lsl 0'
 
 class MaskDesc(OperandDesc):
 	documentation_no_name = True

@@ -27,6 +27,9 @@ def assemble_line(line):
 	idesc, fields = begin_encoding(mnem, operand_strings)
 
 	operand_strings = idesc.rewrite_operands_strings(mnem, operand_strings)
+	if len(operand_strings) > len(idesc.ordered_operands):
+		args = ", ".join(operand_strings[len(idesc.ordered_operands):])
+		raise Exception(f'Unused arguments in {line}: {args}')
 	for opdesc, opstr in zip(idesc.ordered_operands, operand_strings):
 		opdesc.encode_string(fields, opstr)
 
