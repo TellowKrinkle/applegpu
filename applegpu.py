@@ -3174,8 +3174,6 @@ class CmpSel6InstructionDesc(CmpSelInstructionBase):
 			return False
 		if fields[cmp + 'h'] != fields[sel + 'h']:
 			return False
-		if fields[cmp + 's'] != fields['Ds']:
-			return False
 		if fields[cmp + 'u'] != fields[sel + 'u']:
 			return False
 		return True
