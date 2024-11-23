@@ -3319,19 +3319,19 @@ class CmpSrcDesc(NewFloatSrcDesc):
 		reg = try_parse_register(opstr)
 		if reg:
 			if reg.is_int() and not self.is_int(fields):
-				raise Exception(f'register {opstr} incompatible with floating point compare {CMPSEL_CC[fields['cc']]}')
+				raise Exception(f'register {opstr} incompatible with floating point compare {CMPSEL_CC[fields["cc"]]}')
 			if reg.is_float() and self.is_int(fields):
-				raise Exception(f'register {opstr} incompatible with integer compare {CMPSEL_CC[fields['cc']]}')
+				raise Exception(f'register {opstr} incompatible with integer compare {CMPSEL_CC[fields["cc"]]}')
 			self.encode_reg(fields, reg)
 		elif opstr in float_immediate_lookup:
 			if self.is_int(fields):
-				raise Exception(f'float immediate {opstr} incompatible with integer compare {CMPSEL_CC[fields['cc']]}')
+				raise Exception(f'float immediate {opstr} incompatible with integer compare {CMPSEL_CC[fields["cc"]]}')
 			self.encode_imm(fields, float_immediate_lookup[opstr])
 		else:
 			imm = try_parse_integer(opstr)
 			if imm is not None:
 				if not self.is_int(fields):
-					raise Exception(f'integer immediate {opstr} incompatible with float point compare {CMPSEL_CC[fields['cc']]}')
+					raise Exception(f'integer immediate {opstr} incompatible with float point compare {CMPSEL_CC[fields["cc"]]}')
 				self.encode_imm(fields, imm)
 			else:
 				raise Exception(f'invalid CmpSrcDesc {opstr}')
