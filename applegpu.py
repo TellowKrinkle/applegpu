@@ -2711,8 +2711,8 @@ instruction_descriptors_assemble = []
 _instruction_descriptor_names = set()
 def register(cls):
 	group = [cls()]
+	instruction_descriptors_assemble.append(group[0])
 	if isinstance(group[0], InstructionGroup):
-		instruction_descriptors_assemble.append(group[0])
 		group = group[0].members
 	for member in group:
 		name = type(member).__name__
