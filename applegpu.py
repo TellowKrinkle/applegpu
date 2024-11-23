@@ -1767,6 +1767,11 @@ class FieldDesc(OperandDesc):
 class IntegerFieldDesc(FieldDesc):
 	documentation_skip = True # (because it is what it is)
 
+	def __init__(self, name, x, size=None):
+		super().__init__(name, x, size=size)
+		if isinstance(x, list) and len(x) > 1:
+			self.documentation_skip = False
+
 	def _signed(self):
 		return False
 
