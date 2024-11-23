@@ -1139,17 +1139,18 @@ class VariableDstDesc(AbstractDstOperandDesc):
 	def __init__(self, name, bit_off=4, l_off=None, x_off=22, h_off=None, z_off=None, s_off=3, c_off=21, u_off=None):
 		super().__init__(name)
 		self.value_shift = 1 if l_off is None else 0
-		main_fields = [
-			(bit_off, 4, self.name),
-			(x_off,   2, self.name + 'x')
-		]
+		main_fields = [(bit_off, 4, self.name)]
 		if l_off is not None:
 			main_fields.insert(0, (l_off, 1, self.name + 'l'))
+		if x_off is not None:
+			main_fields.append((x_off, 2, self.name + 'x'))
 		if h_off is not None:
 			main_fields.append((h_off, 1, self.name + 'h'))
 		self.add_merged_field(self.name, main_fields)
 		if s_off is not None:
 			self.add_field(s_off, 1, self.name + 's') # size
+		else:
+			self.add_implicit_field(self.name + 's', 1)
 		if c_off is not None:
 			self.add_field(c_off, 1, self.name + 'c') # cache
 		if u_off is not None:
@@ -1162,7 +1163,7 @@ class VariableDstDesc(AbstractDstOperandDesc):
 
 		uniform_bit = fields.get(self.name + 'u', 0) # is uniform
 		size_bit = fields[self.name + 's'] # is 32-bit
-		cache_bit = fields[self.name + 'c']
+		cache_bit = fields.get(self.name + 'c', 0) # TODO: What is it implicitly in MovImm7?
 
 		high_uniform_bit = fields.get(self.name + 'z', 0)
 
@@ -1206,62 +1207,10 @@ class VariableDstDesc(AbstractDstOperandDesc):
 		else:
 			raise Exception(f'invalid VariableDstDesc {opstr}')
 
-class ALUDstSDesc(ALUDstDesc):
-	def __init__(self, name):
-		super().__init__(name)
-		self.add_field(4, 4, self.name)
-		self.add_field(3, 1, self.name + 's')
-
-	def _has_cache(self):
-		return False
-
-	def _value_shift(self):
-		return 1
-
-class ALUDstMDesc(ALUDstDesc):
-	def __init__(self, name, size_off=3, lo_off=18):
-		super().__init__(name)
-		self.add_merged_field(self.name, [
-			(lo_off, 1, self.name + 'l'),
-			( 4, 4, self.name),
-			(22, 2, self.name + 'x'),
-		])
-		self.add_field(size_off, 1, self.name + 's')
-		self.add_field(21, 1, self.name + 'c')
-
-class ALUDstLDesc(ALUDstDesc):
-	def __init__(self, name, size_off=3, lo_off=18, hi_off=60):
-		super().__init__(name)
-		self.add_merged_field(self.name, [
-			(lo_off, 1, self.name + 'l'),
-			( 4, 4, self.name),
-			(22, 2, self.name + 'x'),
-			(hi_off, 1, self.name + 'h'),
-		])
-		self.add_field(size_off, 1, self.name + 's')
-		self.add_field(21, 1, self.name + 'c')
-
-
 class PairedALUDstDesc(ALUDstDesc):
 	# converts r0 <-> r0_r1 and r0h <-> r0h_r1l
 	def _paired(self):
 		return True
-
-class ALUDst64LDesc(ALUDstLDesc):
-	pseudocode = '''
-	{name}(value, flags):
-		return ALUDst(value, flags, max_size=64)
-	'''
-	def _allow64(self):
-		return True
-
-class ALUDst16LDesc(ALUDstLDesc):
-	pseudocode = '''
-	{name}(value, flags):
-		return ALUDst(value, flags, max_size=16)
-	'''
-	def _allow32(self):
-		return False
 
 @document_operand
 class FloatDstDesc(ALUDstDesc):
@@ -2738,8 +2687,22 @@ class MovImm7InstructionDesc(MaskedInstructionDesc):
 		super().__init__('mov_imm', size=2)
 		self.add_constant(0, 3, 0b100)
 		self.add_constant(15, 1, 0)
-		self.add_operand(ALUDstSDesc('D'))
+		self.add_operand(VariableDstDesc('D', x_off=None, c_off=None))
 		self.add_operand(ImmediateDesc('imm7', 8, 7))
+
+	def fields_for_mnem(self, mnem, operand_strings):
+		try:
+			if mnem != self.name:
+				return None
+			if int(operand_strings[1], 0) not in range(128):
+				return None
+			reg = try_parse_register(operand_strings[0])
+			if isinstance(reg, Reg32) and reg.n < 16 and not reg.flags:
+				return {}
+			if isinstance(reg, Reg16) and reg.n < 32 and (reg.n & 1) == 0 and not reg.flags:
+				return {}
+		except ValueError:
+			return None
 
 @register
 class MovImm32InstructionDesc(MaskedInstructionDesc):
@@ -2752,7 +2715,7 @@ class MovImm32InstructionDesc(MaskedInstructionDesc):
 		self.add_constant(16, 1, 0)
 		self.add_constant(17, 1, 1) # Length = 8
 		self.add_constant(20, 1, 0)
-		self.add_operand(ALUDstLDesc('D'))
+		self.add_operand(VariableDstDesc('D', l_off=18, h_off=60))
 		self.add_operand(ImmediateDesc('imm32', [
 			( 8,  7, 'immA'),
 			(33,  4, 'immB'),
@@ -2771,9 +2734,9 @@ class MovFromSrInstructionDesc(MaskedInstructionDesc):
 		self.add_constant(15, 1, 1)
 		self.add_constant(20, 1, 1)
 		self.add_unsure_constant(24, 4, 0b0110)
-		self.add_operand(ALUDstLDesc('D'))
-		self.add_operand(SReg32Desc('SR'))
 		self.add_operand(ImmediateDesc('g', 29, 3))
+		self.add_operand(VariableDstDesc('D', l_off=18, h_off=60))
+		self.add_operand(SReg32Desc('SR'))
 	pseudocode = '''
 	g -> output wait group
 	'''
