@@ -24,6 +24,12 @@ CACHE_HINT = '$'
 SR_NAMES = {
 }
 
+def bit_count(num):
+	if hasattr(num, 'bit_count'):
+		return num.bit_count()
+	else:
+		return bin(num).count('1')
+
 def opcode_to_number(opcode):
 	n = 0
 	for i, c in enumerate(opcode[:MAX_OPCODE_LEN]):
@@ -3252,7 +3258,7 @@ class FFMA8InstructionDesc(FFMAInstructionDescBase):
 		self.add_operand(WaitDesc('W', 61))
 
 	def can_encode_fields(self, fields):
-		if fields['Wm'].bit_count() > 1:
+		if bit_count(fields['Wm']) > 1:
 			return False
 		fields = dict(fields)
 		del fields['Wm']
@@ -3480,7 +3486,7 @@ class CmpSel6InstructionDesc(CmpSelInstructionBase):
 		del fields['Wm']
 
 	def can_encode_fields(self, fields):
-		if fields['Wm'].bit_count() > 1:
+		if bit_count(fields['Wm']) > 1:
 			return False
 		if not self.can_alias_fields(fields, 'A', 'X'):
 			return False
@@ -3571,7 +3577,7 @@ class CmpSel8InstructionDesc(CmpSelInstructionBase):
 		del fields['Wm']
 
 	def can_encode_fields(self, fields):
-		if fields['Wm'].bit_count() > 1:
+		if bit_count(fields['Wm']) > 1:
 			return False
 		if not self.can_alias_field(fields, 'X') and not self.can_alias_field(fields, 'Y'):
 			return False
@@ -3622,7 +3628,7 @@ class CmpSel10InstructionDesc(CmpSelInstructionBase):
 		self.add_operand(WaitDesc('W', 61))
 
 	def can_encode_fields(self, fields):
-		if fields['Wm'].bit_count() > 1:
+		if bit_count(fields['Wm']) > 1:
 			return False
 		fields = dict(fields)
 		del fields['Wm']
