@@ -2464,7 +2464,19 @@ class ExReg16Desc(OperandDesc):
 		v = fields[self.name]
 		return Reg16(v)
 
+# Helper for instructions that are a part of a group where the largest version uses Wm, but smaller versions use W
+class EncodeWmAsWHelper:
+	def can_encode_fields(self, fields):
+		if bit_count(fields['Wm']) > 1:
+			return False
+		fields = dict(fields)
+		del fields['Wm']
+		return super().can_encode_fields(fields)
 
+	def encode_fields(self, fields):
+		fields['W'] = fields['Wm'].bit_length()
+		del fields['Wm']
+		return super().encode_fields(fields)
 
 instruction_descriptors = []
 instruction_descriptors_assemble = []
@@ -3240,7 +3252,7 @@ class FFMA6InstructionDesc(FFMAInstructionDescBase):
 			d_off=39,
 		))
 
-class FFMA8InstructionDesc(FFMAInstructionDescBase):
+class FFMA8InstructionDesc(EncodeWmAsWHelper, FFMAInstructionDescBase):
 	def __init__(self):
 		super().__init__('ffma', size=8)
 		self.add_constant(0, 3, 0b001)
@@ -3256,18 +3268,6 @@ class FFMA8InstructionDesc(FFMAInstructionDescBase):
 
 		#self.add_field(61, 3, 'W') # wait
 		self.add_operand(WaitDesc('W', 61))
-
-	def can_encode_fields(self, fields):
-		if bit_count(fields['Wm']) > 1:
-			return False
-		fields = dict(fields)
-		del fields['Wm']
-		return super().can_encode_fields(fields)
-
-	def encode_fields(self, fields):
-		fields['W'] = fields['Wm'].bit_length()
-		del fields['Wm']
-		return super().encode_fields(fields)
 
 class FFMA10InstructionDesc(FFMAInstructionDescBase):
 	def __init__(self):
@@ -3611,7 +3611,7 @@ class CmpSel8InstructionDesc(CmpSelInstructionBase):
 		D = A cc B ? D : X
 	'''
 
-class CmpSel10InstructionDesc(CmpSelInstructionBase):
+class CmpSel10InstructionDesc(EncodeWmAsWHelper, CmpSelInstructionBase):
 	def __init__(self):
 		super().__init__('cmpsel', size=10)
 		self.add_constant(16, 1, 1) # Length > 6
@@ -3627,16 +3627,7 @@ class CmpSel10InstructionDesc(CmpSelInstructionBase):
 		self.add_operand(SelSrcDesc('Y', 73, common_layout='Y'))
 		self.add_operand(WaitDesc('W', 61))
 
-	def can_encode_fields(self, fields):
-		if bit_count(fields['Wm']) > 1:
-			return False
-		fields = dict(fields)
-		del fields['Wm']
-		return super().can_encode_fields(fields)
-
 	def encode_fields(self, fields):
-		fields['W'] = fields['Wm'].bit_length()
-		del fields['Wm']
 		if 'Di' not in fields:
 			fields['Di'] = 0
 		return super().encode_fields(fields)
