@@ -978,6 +978,234 @@ class ALUDstDesc(AbstractDstOperandDesc):
 			return self.encode(fields, reg)
 		raise Exception('invalid ALUDstDesc %r' % (opstr,))
 
+# Common base class for src registers of variable-length instructions
+class VariableSrcDesc(AbstractSrcOperandDesc):
+	def is_int(self, fields):
+		return False
+	def get_size(self, fields):
+		return fields.get(self.name + 's', 1)
+
+	def __init__(self, name, bit_off, l_off=None, c_off=None, d_off=None, common_layout=None, s_off=None, h_off=None, u_off=None, n_off=None, a_off=None, u_default=0):
+		super().__init__(name)
+		if common_layout is not None:
+			c_off = c_off or bit_off + 6
+			if s_off is None and (common_layout == 'A' or common_layout == 'B'):
+				s_off = bit_off - 1
+			if common_layout == 'A':
+				d_off = d_off or 19
+				l_off = l_off or 51
+				u_off = u_off or l_off + 4
+				h_off = h_off or l_off + 5
+			elif common_layout == 'B':
+				d_off = d_off or 20
+				l_off = l_off or 52
+				u_off = u_off or l_off + 5
+				h_off = h_off or l_off + 6
+				n_off = n_off or l_off + 7
+			else:
+				l_off = l_off or bit_off - 1
+				d_off = d_off or bit_off - 2
+				h_off = h_off or bit_off - 3
+				u_off = u_off or bit_off - 4
+				n_off = n_off or bit_off - 5
+				a_off = a_off or bit_off - 6
+
+		self.value_shift = 1 if l_off is None else 0
+		if l_off is not None:
+			self.add_merged_field(self.name, [
+				(l_off, 1, self.name + 'l'),
+				(bit_off, 6, self.name)
+			])
+		else:
+			self.add_field(bit_off, 6, self.name)
+		if h_off is not None:
+			self.add_field(h_off, 1, self.name + 'h')
+
+		self.add_field(c_off, 1, self.name + 'c')
+		self.add_field(d_off, 1, self.name + 'd')
+		if s_off is not None:
+			self.add_field(s_off, 1, self.name + 's')
+		else:
+			self.add_implicit_field(self.name + 's', 1)
+		if u_off is not None:
+			self.add_field(u_off, 1, self.name + 'u')
+		if n_off is not None:
+			self.add_field(n_off, 1, self.name + 'n')
+		if a_off is not None:
+			self.add_field(a_off, 1, self.name + 'a')
+
+		self.u_default = u_default
+
+	def decode(self, fields):
+		high_bit = 	fields.get(self.name + 'h', 0)
+
+		value = fields[self.name] << self.value_shift
+		uniform_bit = fields.get(self.name + 'u', self.u_default) # is uniform
+		size_bit = self.get_size(fields) # is 32-bit
+		discard_bit = fields[self.name + 'd']
+		cache_bit = fields[self.name + 'c']
+
+		negate_bit = fields.get(self.name + 'n', 0)
+		abs_bit = fields.get(self.name + 'a', 0)
+
+		if uniform_bit:
+			value |= (discard_bit << 7) | (high_bit << 8)
+
+			if cache_bit:
+				if self.is_int(fields):
+					return Immediate(value & 0xff)
+				else:
+					return Immediate(decode_float_immediate(value))
+			else:
+				if size_bit:
+					r = UReg32(value >> 1)
+				else:
+					r = UReg16(value)
+		else:
+			value |= (high_bit << 7)
+
+			if size_bit:
+				r = Reg32(value >> 1)
+			else:
+				r = Reg16(value)
+
+			if cache_bit:
+				r.flags.append(CACHE_FLAG)
+			if discard_bit:
+				r.flags.append(DISCARD_FLAG)
+
+		if self.is_int(fields):
+			if negate_bit:
+				r.flags.append(SIGN_EXTEND_FLAG)
+		else:
+			if abs_bit:
+				r.flags.append(ABS_FLAG)
+			if negate_bit:
+				r.flags.append(NEGATE_FLAG)
+
+		return r
+
+	def encode_reg(self, fields, reg):
+		u16 = isinstance(reg, UReg16)
+		u32 = isinstance(reg, UReg32)
+		r16 = isinstance(reg, Reg16)
+		r32 = isinstance(reg, Reg32)
+		u = u16 or u32
+		s = u32 or r32
+		c = 0
+		h = 0
+		d = 0
+		n = NEGATE_FLAG in reg.flags or SIGN_EXTEND_FLAG in reg.flags
+		a = ABS_FLAG in reg.flags
+		value = reg.n
+		if s:
+			value <<= 1
+		if u:
+			h = (value >> 8) & 1
+			d = (value >> 7) & 1
+		else:
+			h = (value >> 7) & 1
+			d = DISCARD_FLAG in reg.flags
+			c = CACHE_FLAG in reg.flags
+		fields[self.name] = value & 0x7f
+		fields[self.name + 'u'] = u
+		fields[self.name + 's'] = s
+		fields[self.name + 'c'] = c
+		fields[self.name + 'h'] = h
+		fields[self.name + 'd'] = d
+		fields[self.name + 'n'] = n
+		fields[self.name + 'a'] = a
+
+	def encode_imm(self, fields, imm):
+		fields[self.name] = imm & 0x7f
+		fields[self.name + 'd'] = (imm >> 7) & 1
+		fields[self.name + 'u'] = 1
+		fields[self.name + 's'] = 0
+		fields[self.name + 'c'] = 1
+		fields[self.name + 'h'] = 0
+		fields[self.name + 'n'] = 0
+		fields[self.name + 'a'] = 0
+
+	def encode_string(self, fields, opstr):
+		reg = try_parse_register(opstr)
+		if reg:
+			self.encode_reg(fields, reg)
+		elif opstr in float_immediate_lookup:
+			self.encode_imm(fields, float_immediate_lookup[opstr])
+		else:
+			raise Exception(f'invalid VariableSrcDesc {opstr}')
+
+class VariableDstDesc(AbstractDstOperandDesc):
+	def __init__(self, name, bit_off=4, l_off=None, x_off=22, h_off=None, z_off=None, s_off=3, c_off=21, u_off=None):
+		super().__init__(name)
+		self.value_shift = 1 if l_off is None else 0
+		main_fields = [
+			(bit_off, 4, self.name),
+			(x_off,   2, self.name + 'x')
+		]
+		if l_off is not None:
+			main_fields.insert(0, (l_off, 1, self.name + 'l'))
+		if h_off is not None:
+			main_fields.append((h_off, 1, self.name + 'h'))
+		self.add_merged_field(self.name, main_fields)
+		if s_off is not None:
+			self.add_field(s_off, 1, self.name + 's') # size
+		if c_off is not None:
+			self.add_field(c_off, 1, self.name + 'c') # cache
+		if u_off is not None:
+			self.add_field(u_off, 1, self.name + 'u') # is uniform
+		if z_off is not None:
+			self.add_field(z_off, 1, self.name + 'z') # high part of uniform
+
+	def decode(self, fields):
+		value = fields[self.name] << self.value_shift
+
+		uniform_bit = fields.get(self.name + 'u', 0) # is uniform
+		size_bit = fields[self.name + 's'] # is 32-bit
+		cache_bit = fields[self.name + 'c']
+
+		high_uniform_bit = fields.get(self.name + 'z', 0)
+
+		if uniform_bit:
+			value |= high_uniform_bit << 8
+			if size_bit:
+				r = UReg32(value >> 1)
+			else:
+				r = UReg16(value)
+		else:
+			if size_bit:
+				r = Reg32(value >> 1)
+			else:
+				r = Reg16(value)
+
+		if cache_bit:
+			r.flags.append(CACHE_FLAG)
+
+		return r
+
+	def encode_reg(self, fields, reg):
+		u16 = isinstance(reg, UReg16)
+		u32 = isinstance(reg, UReg32)
+		r16 = isinstance(reg, Reg16)
+		r32 = isinstance(reg, Reg32)
+		u = u16 or u32
+		s = u32 or r32
+		value = reg.n
+		if s:
+			value <<= 1
+		fields[self.name] = value & 0xff
+		fields[self.name + 'c'] = CACHE_FLAG in reg.flags
+		fields[self.name + 'u'] = u
+		fields[self.name + 's'] = s
+		fields[self.name + 'z'] = value >> 8
+
+	def encode_string(self, fields, opstr):
+		reg = try_parse_register(opstr)
+		if reg:
+			self.encode_reg(fields, reg)
+		else:
+			raise Exception(f'invalid VariableDstDesc {opstr}')
+
 class ALUDstSDesc(ALUDstDesc):
 	def __init__(self, name):
 		super().__init__(name)
@@ -2714,161 +2942,11 @@ class NewALUSrcDesc(AbstractSrcOperandDesc):
 			r.flags.append(SIGN_EXTEND_FLAG)
 		return r
 
-class NewFloatSrcDesc(AbstractSrcOperandDesc):
+class NewFloatSrcDesc(VariableSrcDesc):
 	def is_int(self, fields):
 		return False
 	def get_size(self, fields):
 		return fields.get(self.name + 's', 1)
-
-	def __init__(self, name, bit_off, l_off=None, c_off=None, d_off=None, common_layout=None, s_off=None, h_off=None, u_off=None, n_off=None, a_off=None, u_default=0):
-		super().__init__(name)
-		if common_layout is not None:
-			c_off = c_off or bit_off + 6
-			if s_off is None and (common_layout == 'A' or common_layout == 'B'):
-				s_off = bit_off - 1
-			if common_layout == 'A':
-				d_off = d_off or 19
-				l_off = l_off or 51
-				u_off = u_off or l_off + 4
-				h_off = h_off or l_off + 5
-			elif common_layout == 'B':
-				d_off = d_off or 20
-				l_off = l_off or 52
-				u_off = u_off or l_off + 5
-				h_off = h_off or l_off + 6
-				n_off = n_off or l_off + 7
-			else:
-				l_off = l_off or bit_off - 1
-				d_off = d_off or bit_off - 2
-				h_off = h_off or bit_off - 3
-				u_off = u_off or bit_off - 4
-				n_off = n_off or bit_off - 5
-				a_off = a_off or bit_off - 6
-
-		self.value_shift = 1 if l_off is None else 0
-		if l_off is not None:
-			self.add_merged_field(self.name, [
-				(l_off, 1, self.name + 'l'),
-				(bit_off, 6, self.name)
-			])
-		else:
-			self.add_field(bit_off, 6, self.name)
-		if h_off is not None:
-			self.add_field(h_off, 1, self.name + 'h')
-
-		self.add_field(c_off, 1, self.name + 'c')
-		self.add_field(d_off, 1, self.name + 'd')
-		if s_off is not None:
-			self.add_field(s_off, 1, self.name + 's')
-		else:
-			self.add_implicit_field(self.name + 's', 1)
-		if u_off is not None:
-			self.add_field(u_off, 1, self.name + 'u')
-		if n_off is not None:
-			self.add_field(n_off, 1, self.name + 'n')
-		if a_off is not None:
-			self.add_field(a_off, 1, self.name + 'a')
-
-		self.u_default = u_default
-
-	def decode(self, fields):
-		high_bit = 	fields.get(self.name + 'h', 0)
-
-		value = fields[self.name] << self.value_shift
-		uniform_bit = fields.get(self.name + 'u', self.u_default) # is uniform
-		size_bit = self.get_size(fields) # is 32-bit
-		discard_bit = fields[self.name + 'd']
-		cache_bit = fields[self.name + 'c']
-
-		negate_bit = fields.get(self.name + 'n', 0)
-		abs_bit = fields.get(self.name + 'a', 0)
-
-		if uniform_bit:
-			value |= (discard_bit << 7) | (high_bit << 8)
-
-			if cache_bit:
-				if self.is_int(fields):
-					return Immediate(value & 0xff)
-				else:
-					return Immediate(decode_float_immediate(value))
-			else:
-				if size_bit:
-					r = UReg32(value >> 1)
-				else:
-					r = UReg16(value)
-		else:
-			value |= (high_bit << 7)
-
-			if size_bit:
-				r = Reg32(value >> 1)
-			else:
-				r = Reg16(value)
-
-			if cache_bit:
-				r.flags.append(CACHE_FLAG)
-			if discard_bit:
-				r.flags.append(DISCARD_FLAG)
-
-		if self.is_int(fields):
-			if negate_bit:
-				r.flags.append(SIGN_EXTEND_FLAG)
-		else:
-			if abs_bit:
-				r.flags.append(ABS_FLAG)
-			if negate_bit:
-				r.flags.append(NEGATE_FLAG)
-
-		return r
-
-	def encode_reg(self, fields, reg):
-		u16 = isinstance(reg, UReg16)
-		u32 = isinstance(reg, UReg32)
-		r16 = isinstance(reg, Reg16)
-		r32 = isinstance(reg, Reg32)
-		u = u16 or u32
-		s = u32 or r32
-		c = 0
-		h = 0
-		d = 0
-		n = NEGATE_FLAG in reg.flags or SIGN_EXTEND_FLAG in reg.flags
-		a = ABS_FLAG in reg.flags
-		value = reg.n
-		if s:
-			value <<= 1
-		if u:
-			h = (value >> 8) & 1
-			d = (value >> 7) & 1
-		else:
-			h = (value >> 7) & 1
-			d = DISCARD_FLAG in reg.flags
-			c = CACHE_FLAG in reg.flags
-		fields[self.name] = value & 0x7f
-		fields[self.name + 'u'] = u
-		fields[self.name + 's'] = s
-		fields[self.name + 'c'] = c
-		fields[self.name + 'h'] = h
-		fields[self.name + 'd'] = d
-		fields[self.name + 'n'] = n
-		fields[self.name + 'a'] = a
-
-	def encode_imm(self, fields, imm):
-		fields[self.name] = imm & 0x7f
-		fields[self.name + 'd'] = (imm >> 7) & 1
-		fields[self.name + 'u'] = 1
-		fields[self.name + 's'] = 0
-		fields[self.name + 'c'] = 1
-		fields[self.name + 'h'] = 0
-		fields[self.name + 'n'] = 0
-		fields[self.name + 'a'] = 0
-
-	def encode_string(self, fields, opstr):
-		reg = try_parse_register(opstr)
-		if reg:
-			self.encode_reg(fields, reg)
-		elif opstr in float_immediate_lookup:
-			self.encode_imm(fields, float_immediate_lookup[opstr])
-		else:
-			raise Exception(f'invalid FloatSrcDesc {opstr}')
 
 class FFMA4BDesc(NewFloatSrcDesc):
 	def get_size(self, fields):
@@ -2881,77 +2959,6 @@ class FFMA4BDesc(NewFloatSrcDesc):
 		res = super().encode_reg(fields, reg)
 		if fields['Z']:
 			fields[self.name + 's'] = 0
-
-class NewFloatDstDesc(AbstractDstOperandDesc):
-	def __init__(self, name, bit_off=4, l_off=None, x_off=22, h_off=None, z_off=None, s_off=3, c_off=21, u_off=None):
-		super().__init__(name)
-		self.value_shift = 1 if l_off is None else 0
-		main_fields = [
-			(bit_off, 4, self.name),
-			(x_off,   2, self.name + 'x')
-		]
-		if l_off is not None:
-			main_fields.insert(0, (l_off, 1, self.name + 'l'))
-		if h_off is not None:
-			main_fields.append((h_off, 1, self.name + 'h'))
-		self.add_merged_field(self.name, main_fields)
-		if s_off is not None:
-			self.add_field(s_off, 1, self.name + 's') # size
-		if c_off is not None:
-			self.add_field(c_off, 1, self.name + 'c') # cache
-		if u_off is not None:
-			self.add_field(u_off, 1, self.name + 'u') # is uniform
-		if z_off is not None:
-			self.add_field(z_off, 1, self.name + 'z') # high part of uniform
-
-	def decode(self, fields):
-		value = fields[self.name] << self.value_shift
-
-		uniform_bit = fields.get(self.name + 'u', 0) # is uniform
-		size_bit = fields[self.name + 's'] # is 32-bit
-		cache_bit = fields[self.name + 'c']
-
-		high_uniform_bit = fields.get(self.name + 'z', 0)
-
-		if uniform_bit:
-			value |= high_uniform_bit << 8
-			if size_bit:
-				r = UReg32(value >> 1)
-			else:
-				r = UReg16(value)
-		else:
-			if size_bit:
-				r = Reg32(value >> 1)
-			else:
-				r = Reg16(value)
-
-		if cache_bit:
-			r.flags.append(CACHE_FLAG)
-
-		return r
-
-	def encode_reg(self, fields, reg):
-		u16 = isinstance(reg, UReg16)
-		u32 = isinstance(reg, UReg32)
-		r16 = isinstance(reg, Reg16)
-		r32 = isinstance(reg, Reg32)
-		u = u16 or u32
-		s = u32 or r32
-		value = reg.n
-		if s:
-			value <<= 1
-		fields[self.name] = value & 0xff
-		fields[self.name + 'c'] = CACHE_FLAG in reg.flags
-		fields[self.name + 'u'] = u
-		fields[self.name + 's'] = s
-		fields[self.name + 'z'] = value >> 8
-
-	def encode_string(self, fields, opstr):
-		reg = try_parse_register(opstr)
-		if reg:
-			self.encode_reg(fields, reg)
-		else:
-			raise Exception(f'invalid FloatDstDesc {opstr}')
 
 
 class FFMAInstructionDescBase(MaskedInstructionDesc):
@@ -3144,7 +3151,7 @@ class FFMA4InstructionDesc(FFMAInstructionDescBase):
 		super().__init__('ffma', size=4)
 		self.add_constant(0, 3, 0b001)
 
-		self.add_operand(NewFloatDstDesc('D',  4))
+		self.add_operand(VariableDstDesc('D',  4))
 		self.add_operand(NewFloatSrcDesc('A',  9, s_off= 8, c_off=15, d_off=19))
 		self.add_operand(FFMA4BDesc('B', 25, s_off=24, c_off=31, d_off=20))
 
@@ -3225,7 +3232,7 @@ class FFMA6InstructionDesc(FFMAInstructionDescBase):
 		self.add_constant(18, 1, 0b1) # 'L'
 		self.add_constant(32, 2, 0b00)
 
-		self.add_operand(NewFloatDstDesc('D', l_off=34))
+		self.add_operand(VariableDstDesc('D', l_off=34))
 
 		self.add_operand(NewFloatSrcDesc('A',
 			9,
@@ -3261,7 +3268,7 @@ class FFMA8InstructionDesc(EncodeWmAsWHelper, FFMAInstructionDescBase):
 		self.add_constant(18, 1, 0b1) # 'L'
 		self.add_constant(32, 2, 0b01)
 
-		self.add_operand(NewFloatDstDesc('D', l_off=50, h_off=60, u_off=54))
+		self.add_operand(VariableDstDesc('D', l_off=50, h_off=60, u_off=54))
 		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A'))
 		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B'))
 		self.add_operand(NewFloatSrcDesc('C', 41, common_layout='C', s_off=49))
@@ -3277,7 +3284,7 @@ class FFMA10InstructionDesc(FFMAInstructionDescBase):
 		self.add_constant(18, 1, 0b1) # 'L'
 		self.add_constant(33, 1, 0b1)
 
-		self.add_operand(NewFloatDstDesc('D', l_off=50, h_off=60, z_off=66, u_off=54))
+		self.add_operand(VariableDstDesc('D', l_off=50, h_off=60, z_off=66, u_off=54))
 		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', a_off=80, n_off=65))
 		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', a_off=81))
 		self.add_operand(NewFloatSrcDesc('C', 41, common_layout='C', s_off=49))
@@ -3316,7 +3323,7 @@ class FFMAInstructionDesc(InstructionGroup):
 			FFMA10InstructionDesc(),
 		])
 
-class CmpSrcDesc(NewFloatSrcDesc):
+class CmpSrcDesc(VariableSrcDesc):
 	documentation_extra_arguments = ['cc']
 	def is_int(self, fields):
 		return (fields['cc'] & 4) != 0
@@ -3342,7 +3349,7 @@ class CmpSrcDesc(NewFloatSrcDesc):
 			else:
 				raise Exception(f'invalid CmpSrcDesc {opstr}')
 
-class SelSrcDesc(NewFloatSrcDesc):
+class SelSrcDesc(VariableSrcDesc):
 	documentation_extra_arguments = ['Di', 'Ds']
 	def is_int(self, fields):
 		return fields['Di']
@@ -3421,7 +3428,7 @@ class CmpSel6InstructionDesc(CmpSelInstructionBase):
 		super().__init__('cmpsel', size=6)
 		self.add_constant(16, 1, 0) # Length = 6
 		self.add_operand(EnumDesc('cc', 32, 3, CMPSEL_CC))
-		self.add_operand(NewFloatDstDesc('D', l_off=3, s_off=17, u_off=38, h_off=44))
+		self.add_operand(VariableDstDesc('D', l_off=3, s_off=17, u_off=38, h_off=44))
 		self.add_operand(CmpSrcDesc('A',  9, common_layout='A', l_off=35))
 		self.add_operand(CmpSrcDesc('B', 25, common_layout='B', l_off=36))
 		self.add_operand(WaitDesc('W', 45))
@@ -3549,7 +3556,7 @@ class CmpSel8InstructionDesc(CmpSelInstructionBase):
 			(34, 1, 'ccx'),
 			(32, 1, 'Z'),
 		], None, cc_to_name))
-		self.add_operand(NewFloatDstDesc('D', l_off=3, s_off=17, u_off=54, h_off=60))
+		self.add_operand(VariableDstDesc('D', l_off=3, s_off=17, u_off=54, h_off=60))
 		self.add_operand(CmpSrcDesc('A',  9, common_layout='A'))
 		self.add_operand(CmpSrcDesc('B', 25, common_layout='B'))
 		self.add_operand(SelSrcDesc('X', 41, common_layout='X'))
@@ -3620,7 +3627,7 @@ class CmpSel10InstructionDesc(EncodeWmAsWHelper, CmpSelInstructionBase):
 			(48, 3, 'cc'),
 			(34, 1, 'ccx'),
 		], None, CMPSEL_CC))
-		self.add_operand(NewFloatDstDesc('D', l_off=3, s_off=17, u_off=54, h_off=60))
+		self.add_operand(VariableDstDesc('D', l_off=3, s_off=17, u_off=54, h_off=60))
 		self.add_operand(CmpSrcDesc('A',  9, common_layout='A', n_off=65))
 		self.add_operand(CmpSrcDesc('B', 25, common_layout='B'))
 		self.add_operand(SelSrcDesc('X', 41, common_layout='X'))
@@ -3645,7 +3652,7 @@ class CmpSel14InstructionDesc(CmpSelInstructionBase):
 			(48, 3, 'cc'),
 			(34, 1, 'ccx'),
 		], None, CMPSEL_CC))
-		self.add_operand(NewFloatDstDesc('D', l_off=3, s_off=17, u_off=54, h_off=60, z_off=82))
+		self.add_operand(VariableDstDesc('D', l_off=3, s_off=17, u_off=54, h_off=60, z_off=82))
 		self.add_operand(CmpSrcDesc('A',  9, common_layout='A', a_off=96, n_off=65))
 		self.add_operand(CmpSrcDesc('B', 25, common_layout='B', a_off=97))
 		self.add_operand(SelSrcDesc('X', 41, common_layout='X'))
