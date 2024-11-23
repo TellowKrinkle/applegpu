@@ -1692,6 +1692,21 @@ class ShiftDesc(OperandDesc):
 		if not opstr.startswith('lsl '):
 			return 'lsl 0'
 
+class NewShiftDesc(OperandDesc):
+	documentation_no_name = True
+
+	def __init__(self, name):
+		super().__init__(name)
+		self.add_merged_field('s', [
+			(62, 1, 's1'),
+			(76, 1, 's2'),
+		])
+
+	def decode(self, fields):
+		shift = fields['s']
+		return 'lsl %d' % (shift) if shift else 'lsl 4'
+
+
 class MaskDesc(OperandDesc):
 	documentation_no_name = True
 
@@ -2565,6 +2580,122 @@ class DeviceStoreInstructionDesc(DeviceLoadStoreInstructionDesc):
 	q0 -> I thought I've seen this unset on stores before but now I can't get it to happen
 	'''
 
+
+class NewALUDstDesc(AbstractSrcOperandDesc):
+	def __init__(self, name):
+		super().__init__(name)
+
+		# destination bits
+		self.add_merged_field(self.name, [
+			(24, 1, self.name + 'l'),
+			(25, 7, self.name)
+		])
+
+		self.add_field(32, 1, self.name + 'c') # cache (or uniform register high)
+		self.add_field(33, 1, self.name + 'r') # 1 = GPR, 0 = UReg
+		self.add_field(59, 2, self.name + 's') # size: 0 = 16-bit, 1 = 32-bit, 2 = 64-bit
+
+
+	def get_size(self, fields):
+		return fields[self.name + 's']
+
+	def decode(self, fields):
+		value = fields[self.name]
+		uniform_bit = not fields[self.name + 'r'] # is register
+		size_bits = self.get_size(fields)
+		cache_bit = fields[self.name + 'c']
+
+		if uniform_bit:
+			value |= cache_bit << 8
+			if size_bits == 0:
+				r = UReg16(value)
+			elif size_bits == 1:
+				r = UReg32(value >> 1)
+			elif size_bits == 2:
+				r = UReg64(value >> 1)
+			else:
+				raise Exception(f'unknown size bits for uniform in NewALUDstDesc ({size_bits})')
+		else:
+			if size_bits == 0:
+				r = Reg16(value)
+			elif size_bits == 1:
+				r = Reg32(value >> 1)
+			elif size_bits == 2:
+				r = Reg64(value >> 1)
+			else:
+				raise Exception(f'unknown size bits for register in NewALUDstDesc ({size_bits})')
+			if cache_bit:
+				r.flags.append(CACHE_FLAG)
+
+		return r
+
+class NewALUSrcDesc(AbstractSrcOperandDesc):
+	def __init__(self, name, bit_off, s_off, t_off, r_off, is_64):
+		super().__init__(name)
+
+		sx_off = r_off + 1
+
+		# destination bits
+		self.add_merged_field(self.name, [
+			(bit_off, 1, self.name + 'l'),
+			(bit_off+1, 7, self.name)
+		])
+
+		self.add_field(bit_off+8, 1, self.name + 'c') # cache (or uniform register high)
+
+		if is_64:
+			self.add_field(s_off, 2, self.name + 's')
+		else:
+			self.add_field(s_off, 1, self.name + 's')
+
+		self.add_field(r_off, 1, self.name + 'r')
+		self.add_field(t_off, 1, self.name + 't')
+		self.add_field(sx_off, 1, self.name + 'sx')
+
+	def get_size(self, fields):
+		return fields[self.name + 's']
+
+	def decode(self, fields):
+		value = fields[self.name]
+		register_bit = fields[self.name + 'r'] # is register
+		size_bits = self.get_size(fields)
+		cache_bit = fields[self.name + 'c']
+
+		t_bit = fields[self.name + 't']
+		sx_bit = fields[self.name + 'sx']
+
+		if register_bit:
+			if size_bits == 0:
+				r = Reg16(value)
+			elif size_bits == 1:
+				r = Reg32(value >> 1)
+			elif size_bits == 2:
+				r = Reg64(value >> 1)
+			else:
+				raise Exception(f'unknown size bits for register in NewALUDstDesc ({size_bits})')
+			if cache_bit:
+				r.flags.append(CACHE_FLAG)
+			if t_bit:
+				r.flags.append(DISCARD_FLAG)
+		else:
+			value |= cache_bit << 8
+
+			if t_bit:
+				if size_bits == 0:
+					r = UReg16(value)
+				elif size_bits == 1:
+					r = UReg32(value >> 1)
+				elif size_bits == 2:
+					r = UReg64(value >> 1)
+				else:
+					raise Exception(f'unknown size bits for uniform in NewALUDstDesc ({size_bits})')
+			else:
+				return Immediate(value & 0xff)
+
+		if sx_bit:
+			r.flags.append(SIGN_EXTEND_FLAG)
+		return r
+
 class NewFloatSrcDesc(AbstractSrcOperandDesc):
 	def is_int(self, fields):
 		return False
@@ -2836,6 +2967,158 @@ class FFMAInstructionDescBase(MaskedInstructionDesc):
 
 	def fields_for_mnem_base(self, mnem):
 		if mnem == self.name: return {}
+
+
+
+class IAddSubInstructionDesc(MaskedInstructionDesc):
+
+	def fields_to_mnem_base(self, fields):
+		return 'iadd' if fields['P'] else 'isub'
+
+	def fields_for_mnem_base(self, mnem):
+		if mnem == 'isub': return {'P': 0}
+		if mnem == 'iadd': return {'P': 1}
+
+	def __init__(self, mnem, imm, is_64=False, is_shifted=False):
+		super().__init__(mnem, size=10)
+		self.add_constant(0, 7, 0b0011111)
+		self.add_constant(8, 1, 0b1)
+
+
+		# both usually one, zero only on the first op in a function.
+		self.add_field(20, 1, 'q1')
+		self.add_field(22, 1, 'q2')
+
+		self.add_operand(NewALUDstDesc('D'))
+
+		if is_64:
+			self.add_constant(59, 2, 0b10)
+		else:
+			self.add_constant(60, 1, 0)
+
+		self.add_operand(NewALUSrcDesc('A', bit_off=41, s_off=61, t_off=65, r_off=72, is_64=is_64))
+		self.add_operand(NewALUSrcDesc('B', bit_off=50, s_off=63, t_off=66, r_off=74, is_64=is_64))
+
+		if not is_64:
+			if is_shifted:
+				self.add_constant(64, 1, 0) # !shift
+				self.add_operand(NewShiftDesc('shift'))
+			else:
+				self.add_constant(64, 1, 1) # !shift
+				self.add_field(62, 1, 'S') # saturate, or shift low bit
+
+		self.add_operand(WaitDesc('W', lo=12, hi=15))
+
+		self.add_constant(18, 1, 1) # maybe flag?
+		#self.add_field(18, 1, 'q18')
+
+		self.add_constant(68, 1, 1) # maybe flag?
+		#self.add_field(68, 1, 'q68')
+
+		self.add_field(7, 1, 'P')
+
+
+	def fields_to_mnem_suffix(self, fields):
+		suffix = ''
+
+		if fields.get('S', 0):
+			suffix += '.sat'
+
+		if fields.get('q0', 0):
+			suffix += '.first'
+
+		return suffix
+
+	def fields_for_mnem(self, mnem, operand_strings):
+		S = 0
+		suffixes = {'sat': 'S', 'q1': 'q1', 'q2': 'q2'}
+		has = set()
+		while True:
+			rest, _, suffix = mnem.rpartition('.')
+			if rest and suffix in suffixes:
+				has.add(suffixes[suffix])
+				mnem = rest
+			else:
+				break
+		fields = self.fields_for_mnem_base(mnem)
+		if fields is not None:
+			for suffix in suffixes.values():
+				fields[suffix] = suffix in has
+		return fields
+
+	def fields_for_mnem_base(self, mnem):
+		if mnem == self.name: return {}
+
+
+@register
+class IAddInstructionDesc(IAddSubInstructionDesc):
+	documentation_begin_group = 'Integer Arithmetic'
+	documentation_name = '16/32-bit Integer Add/Subtract'
+	def __init__(self):
+		super().__init__('iadd', 0b110011111, is_64=False)
+
+	pseudocode = '''
+	for each active thread:
+		a = A[thread]
+		b = B[thread]
+
+		saturating = S
+
+		if P == 0:
+			b = -b
+
+		result = a + b
+
+		if saturating:
+			# TODO: signed/unsigned/width
+			result = saturate(result)
+
+		D[thread] = result
+	'''
+
+@register
+class IAddShiftedInstructionDesc(IAddSubInstructionDesc):
+	documentation_name = '16/32-bit Integer Add/Subtract with Shift'
+	def __init__(self):
+		super().__init__('iadd', 0b110011111, is_64=False, is_shifted=True)
+
+	pseudocode = '''
+	for each active thread:
+		a = A[thread]
+		b = B[thread]
+
+		if shift == 0:
+			shift_distance = 4
+		else:
+			shift_distance = shift
+
+		if P == 0:
+			b = -b
+
+		result = a + (b << shift_distance)
+
+		D[thread] = result
+	'''
+
+@register
+class IAdd64InstructionDesc(IAddSubInstructionDesc):
+	documentation_name = '64-bit Integer Add/Subtract'
+	def __init__(self):
+		super().__init__('iadd', 0b110011111, is_64=True)
+
+	pseudocode = '''
+	for each active thread:
+		a = A[thread]
+		b = B[thread]
+
+		if P == 0:
+			b = -b
+
+		result = a + b
+
+		D[thread] = result
+	'''
+
 
 class FFMA4InstructionDesc(FFMAInstructionDescBase):
 	documentation_begin_group = 'Floating-Point Arithmetic'
