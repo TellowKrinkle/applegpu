@@ -1001,7 +1001,6 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 				l_off = l_off or 52
 				u_off = u_off or l_off + 5
 				h_off = h_off or l_off + 6
-				n_off = n_off or l_off + 7
 			else:
 				l_off = l_off or bit_off - 1
 				d_off = d_off or bit_off - 2
@@ -3238,7 +3237,7 @@ class FFMA8InstructionDesc(EncodeWmAsWHelper, FFMAInstructionDescBase):
 
 		self.add_operand(VariableDstDesc('D', l_off=50, h_off=60, u_off=54))
 		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A'))
-		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B'))
+		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', n_off=59))
 		self.add_operand(NewFloatSrcDesc('C', 41, common_layout='C', s_off=49))
 
 		#self.add_field(61, 3, 'W') # wait
@@ -3254,7 +3253,7 @@ class FFMA10InstructionDesc(FFMAInstructionDescBase):
 
 		self.add_operand(VariableDstDesc('D', l_off=50, h_off=60, z_off=66, u_off=54))
 		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', a_off=80, n_off=65))
-		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', a_off=81))
+		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', a_off=81, n_off=59))
 		self.add_operand(NewFloatSrcDesc('C', 41, common_layout='C', s_off=49))
 
 		self.add_operand(WaitDesc('W', 61, 77))
@@ -3398,11 +3397,11 @@ class CmpSel6InstructionDesc(CmpSelInstructionBase):
 		self.add_operand(EnumDesc('cc', 32, 3, CMPSEL_CC))
 		self.add_operand(VariableDstDesc('D', l_off=3, s_off=17, u_off=38, h_off=44))
 		self.add_operand(CmpSrcDesc('A',  9, common_layout='A', l_off=35))
-		self.add_operand(CmpSrcDesc('B', 25, common_layout='B', l_off=36))
+		self.add_operand(CmpSrcDesc('B', 25, common_layout='B', l_off=36, n_off=43))
 		self.add_operand(WaitDesc('W', 45))
 		# Shadow operands for making a virtual full 5-arg cmpsel
 		self.sel_a = SelSrcDesc('A',  9, common_layout='A', l_off=35)
-		self.sel_b = SelSrcDesc('B', 25, common_layout='B', l_off=36)
+		self.sel_b = SelSrcDesc('B', 25, common_layout='B', l_off=36, n_off=43)
 
 	def is_cursed(self, fields):
 		a_imm = fields['Au'] and fields['Ac']
@@ -3526,7 +3525,7 @@ class CmpSel8InstructionDesc(CmpSelInstructionBase):
 		], None, cc_to_name))
 		self.add_operand(VariableDstDesc('D', l_off=3, s_off=17, u_off=54, h_off=60))
 		self.add_operand(CmpSrcDesc('A',  9, common_layout='A'))
-		self.add_operand(CmpSrcDesc('B', 25, common_layout='B'))
+		self.add_operand(CmpSrcDesc('B', 25, common_layout='B', n_off=59))
 		self.add_operand(SelSrcDesc('X', 41, common_layout='X'))
 		self.add_operand(WaitDesc('W', 61))
 
@@ -3597,7 +3596,7 @@ class CmpSel10InstructionDesc(EncodeWmAsWHelper, CmpSelInstructionBase):
 		], None, CMPSEL_CC))
 		self.add_operand(VariableDstDesc('D', l_off=3, s_off=17, u_off=54, h_off=60))
 		self.add_operand(CmpSrcDesc('A',  9, common_layout='A', n_off=65))
-		self.add_operand(CmpSrcDesc('B', 25, common_layout='B'))
+		self.add_operand(CmpSrcDesc('B', 25, common_layout='B', n_off=59))
 		self.add_operand(SelSrcDesc('X', 41, common_layout='X'))
 		self.add_operand(SelSrcDesc('Y', 73, common_layout='Y'))
 		self.add_operand(WaitDesc('W', 61))
@@ -3622,7 +3621,7 @@ class CmpSel14InstructionDesc(CmpSelInstructionBase):
 		], None, CMPSEL_CC))
 		self.add_operand(VariableDstDesc('D', l_off=3, s_off=17, u_off=54, h_off=60, z_off=82))
 		self.add_operand(CmpSrcDesc('A',  9, common_layout='A', a_off=96, n_off=65))
-		self.add_operand(CmpSrcDesc('B', 25, common_layout='B', a_off=97))
+		self.add_operand(CmpSrcDesc('B', 25, common_layout='B', a_off=97, n_off=59))
 		self.add_operand(SelSrcDesc('X', 41, common_layout='X'))
 		self.add_operand(SelSrcDesc('Y', 73, common_layout='Y'))
 		self.add_operand(WaitDesc('W', 61, 93))
