@@ -688,6 +688,13 @@ class InstructionDesc:
 				opstrs.append(insert or '')
 		return opstrs
 
+	def encode_strings(self, mnem, fields, operand_strings):
+		for opdesc, opstr in zip(self.ordered_operands, operand_strings):
+			opdesc.encode_string(fields, opstr)
+
+		for opdesc in self.ordered_operands[len(operand_strings):]:
+			opdesc.encode_string(fields, '')
+
 	def _can_encode_fields(self, fields, print_err=False):
 		encodable = {name: parts for name, parts in self.merged_fields}
 		for k, v in fields.items():
@@ -713,6 +720,9 @@ class InstructionGroup:
 		self.members = members
 		# The last instruction in the group should have the most complete operand list, use that
 		self.ordered_operands = members[-1].ordered_operands
+
+	def encode_strings(self, mnem, fields, operand_strings):
+		members[-1].encode_strings(mnem, fields, operand_strings)
 
 	def encode_fields(self, fields):
 		for member in self.members[:-1]:

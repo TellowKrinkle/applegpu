@@ -30,11 +30,7 @@ def assemble_line(line):
 	if len(operand_strings) > len(idesc.ordered_operands):
 		args = ", ".join(operand_strings[len(idesc.ordered_operands):])
 		raise Exception(f'Unused arguments in {line}: {args}')
-	for opdesc, opstr in zip(idesc.ordered_operands, operand_strings):
-		opdesc.encode_string(fields, opstr)
-
-	for opdesc in idesc.ordered_operands[len(operand_strings):]:
-		opdesc.encode_string(fields, '')
+	idesc.encode_strings(mnem, fields, operand_strings)
 
 	return idesc.encode_fields(fields)
 
