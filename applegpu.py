@@ -3983,6 +3983,12 @@ class WaitInstructionDesc(InstructionDesc):
 		self.add_constant(32, 16, 0b0110) # nop
 		self.add_constant(48, 16, 0b0110) # nop
 
+	pseudocode = '''
+	# This is used on the base M3 to work around an errata of some sort.
+	# The compiler inserts one of these before any instruction with a wait mask, putting the same wait mask into the wait instruction.
+	# This is actually one 2-byte instruction followed by 3 nops, but it is marked as an 8-byte instruction to avoid spamming nops everywhere in M3 disassembly.
+	'''
+
 def get_instruction_descriptor(n):
 	for o in instruction_descriptors:
 		if o.matches(n):
