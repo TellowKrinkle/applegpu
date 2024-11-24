@@ -1745,10 +1745,10 @@ class TruthTableDesc(OperandDesc):
 	def __init__(self, name):
 		super().__init__(name)
 
-		self.add_field(26, 1, self.name + '0')
-		self.add_field(27, 1, self.name + '1')
-		self.add_field(38, 1, self.name + '2')
-		self.add_field(39, 1, self.name + '3')
+		self.add_field(32, 1, self.name + '0')
+		self.add_field(33, 1, self.name + '1')
+		self.add_field(43, 1, self.name + '2')
+		self.add_field(16, 1, self.name + '3')
 
 	def decode(self, fields):
 		return ''.join(str(fields[self.name + str(i)]) for i in range(4))
@@ -2970,7 +2970,284 @@ class FFMAInstructionDescBase(MaskedInstructionDesc):
 	def fields_for_mnem_base(self, mnem):
 		if mnem == self.name: return {}
 
+class BitOpSrcDesc(VariableSrcDesc):
+	def is_int(self, fields):
+		return True
+	def encode_string(self, fields, opstr):
+		reg = try_parse_register(opstr)
+		if reg:
+			self.encode_reg(fields, reg)
+		else:
+			imm = try_parse_integer(opstr)
+			if imm is not None:
+				self.encode_imm(fields, imm)
+			else:
+				raise Exception(f'invalid BitOpSrcDesc {opstr}')
 
+class MovSrcDesc(BitOpSrcDesc):
+	documentation_extra_arguments = ['Ds']
+	def get_size(self, fields):
+		return fields['Ds']
+	def encode_string(self, fields, opstr):
+		super().encode_string(fields, opstr)
+		del fields[self.name + 's']
+
+class BitOpInstructionBase(MaskedInstructionDesc):
+	def __init__(self, size, name='bitop'):
+		super().__init__(name, size=size)
+		self.add_constant(0, 3, 0b011)
+
+BITOPMOV_OPS = {
+	0: 'zero', # Unobserved
+	1: 'mov',
+	5: 'mov5', # Unobserved
+}
+BITOP4_OPS = {
+	2: 'and',
+	3: 'xor',
+	4: 'or',
+}
+# 6 and 7 indicate that the instruction 10 bytes long
+
+class BitOpMovInstructionDesc(BitOpInstructionBase):
+	documentation_begin_group = 'Bitwise Operations'
+	def __init__(self):
+		super().__init__(name='bitop_unary', size=4)
+		self.add_operand(EnumDesc('op', 16, 3, BITOPMOV_OPS))
+		self.add_operand(VariableDstDesc('D', l_off=24, u_off=26))
+		self.add_operand(MovSrcDesc('A', 9, l_off=8, c_off=15, d_off=19, u_off=27))
+		self.add_operand(WaitDesc('W', 29))
+
+	pseudocode = '''
+	for each active thread:
+		if op == 1 or op == 5:
+			D[thread] = A[thread]
+		if op == 0:
+			D[thread] = 0
+		# Other values of op map to bitop
+	'''
+
+	def fields_to_operands(self, fields):
+		operands = super().fields_to_operands(fields)
+		if fields['op'] == 1: # The only one actually in use
+			del operands[0]
+		return operands
+
+	def fields_to_mnem_base(self, fields):
+		if fields['op'] == 1:
+			return 'mov'
+		return self.name
+
+	def matches(self, instr):
+		return super().matches(instr) and ((instr >> 16) & 7) in BITOPMOV_OPS
+
+	def remove_tt_wm_as(self, fields):
+		for i in range(4):
+			del fields['tt' + str(i)]
+		del fields['Wm']
+		del fields['As']
+
+	def can_encode_fields(self, fields):
+		if 'op' in fields:
+			return fields['op'] in BITOPMOV_OPS and super().can_encode_fields(fields)
+		if bit_count(fields['Wm']) > 1:
+			return False
+		if fields['tt0'] != 0 or fields['tt1'] != 1 or fields['tt2'] != 0 or fields['tt3'] != 1:
+			return False
+		a_imm = fields['Au'] and fields['Ac']
+		if not a_imm and fields['Ds'] != fields['As']:
+			return False
+		fields = dict(fields)
+		self.remove_tt_wm_as(fields)
+		return super().can_encode_fields(fields)
+
+	def encode_fields(self, fields):
+		if 'op' in fields:
+			return super().encode_fields(fields)
+		# The only operation bitop can encode that we can also encode is mov
+		fields['op'] = 1
+		fields['W'] = fields['Wm'].bit_length()
+		self.remove_tt_wm_as(fields)
+		return super().encode_fields(fields)
+
+class BitOp4InstructionDesc(BitOpInstructionBase):
+	def __init__(self):
+		super().__init__(size=4)
+		self.add_operand(EnumDesc('op', 16, 3, BITOP4_OPS))
+		self.add_operand(VariableDstDesc('D'))
+		self.add_operand(BitOpSrcDesc('A',  9, s_off= 8, c_off=15, d_off=19))
+		self.add_operand(BitOpSrcDesc('B', 25, s_off=24, c_off=31, d_off=20))
+
+	pseudocode = '''
+	for each active thread:
+		a = A[thread]
+		b = B[thread]
+		if op == 2:
+			D[thread] = a & b
+		if op == 3:
+			D[thread] = a ^ b
+		if op == 4:
+			D[thread] = a | b
+		# Other values of op map to bitop_unary or 10-byte bitop
+	'''
+
+	def matches(self, instr):
+		return super().matches(instr) and ((instr >> 16) & 7) in BITOP4_OPS
+
+	def fields_to_operands(self, fields):
+		operands = super().fields_to_operands(fields)
+		del operands[0]
+		return operands
+
+	def fields_to_mnem_base(self, fields):
+		return BITOP4_OPS[fields['op']]
+
+	def get_op_from_tt(self, fields):
+		tt = ''.join(str(fields['tt' + str(x)]) for x in range(4))
+		mnem = BitOp10InstructionDesc.binary_aliases.get(tt)
+		if mnem is None:
+			return False
+		for k, v in BITOP4_OPS.items():
+			if mnem == v:
+				fields = dict(fields)
+				return k
+
+	def remove_tt(self, fields):
+		for i in range(4):
+			del fields['tt' + str(i)]
+
+	def can_encode_fields(self, fields):
+		if (fields['D'] & 1) or (fields['A'] & 1) or (fields['B'] & 1):
+			return False
+		if self.get_op_from_tt(fields) is None:
+			return False
+		fields = dict(fields)
+		self.remove_tt(fields)
+		return super().can_encode_fields(fields)
+
+	def encode_fields(self, fields):
+		# This was encoded by BitOp10, convert from its format
+		fields['op'] = self.get_op_from_tt(fields)
+		fields['D'] >>= 1
+		fields['A'] >>= 1
+		fields['B'] >>= 1
+		self.remove_tt(fields)
+		return super().encode_fields(fields)
+
+class BitOp10InstructionDesc(BitOpInstructionBase):
+	binary_aliases = {
+		'0001': 'and',
+		'0010': 'andn1',
+		'0100': 'andn2',
+		'0110': 'xor',
+		'0111': 'or',
+		'1000': 'nor',
+		'1001': 'xnor',
+		'1011': 'orn1',
+		'1101': 'orn2',
+		'1110': 'nand',
+	}
+	unary_aliases = {
+		'1010': 'not',
+		'0101': 'mov',
+	}
+	# 0011: acts like and
+	# 1100: hangs
+	# 0000: clears all bits
+	# 1111: sets all bits
+	aliases = set(binary_aliases.values()) | set(unary_aliases.values())
+
+	def rewrite_operands_strings(self, mnem, operand_strings):
+		for k, v in self.binary_aliases.items():
+			if v == mnem:
+				mnem = 'bitop'
+				operand_strings.insert(0, k)
+
+		for k, v in self.unary_aliases.items():
+			if v == mnem:
+				mnem = 'bitop'
+				operand_strings.insert(0, k)
+				operand_strings.insert(3, 'r0l')
+
+		assert mnem == 'bitop'
+		return super().rewrite_operands_strings(mnem, operand_strings)
+
+	def __init__(self):
+		super().__init__(size=10)
+		self.add_constant(17, 2, 0b11)
+		self.add_operand(TruthTableDesc('tt'))
+		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38, z_off=50))
+		self.add_operand(BitOpSrcDesc('A',  9, common_layout='A', l_off=35))
+		self.add_operand(BitOpSrcDesc('B', 25, common_layout='B', l_off=36))
+		self.add_operand(WaitDesc('W', lo=45, hi=61))
+
+	pseudocode = '''
+	for each active thread:
+		a = A[thread]
+		b = B[thread]
+
+		if tt0 == tt1 and tt2 == tt3 and tt0 != tt2:
+			UNDEFINED()
+			if tt0:
+				HANG()
+			else:
+				result = a & b
+		else:
+			result = 0
+			if tt0: result |= ~a & ~b
+			if tt1: result |=  a & ~b
+			if tt2: result |= ~a &  b
+			if tt3: result |=  a &  b
+
+		D[thread] = result
+	'''
+
+	def fields_for_mnem(self, mnem, operand_strings):
+		if mnem == self.name or mnem in self.aliases:
+			return {}
+
+	def map_to_alias(self, mnem, operands):
+		tt = operands[0]
+		alias = self.binary_aliases.get(tt)
+		if alias:
+			return alias, operands[1:]
+
+		if str(operands[3]) == 'r0l':
+			alias = self.unary_aliases.get(tt)
+			if alias:
+				del operands[3]
+				del operands[0]
+				return alias, operands
+
+		return mnem, operands
+
+@register
+class BitOpInstructionDesc(InstructionGroup):
+	def __init__(self):
+		super().__init__('bitop', [
+			BitOpMovInstructionDesc(),
+			BitOp4InstructionDesc(),
+			BitOp10InstructionDesc(),
+		])
+
+	def fields_for_mnem(self, mnem, operand_strings):
+		if mnem == 'bitop_unary' or mnem == 'bitop' or mnem in BitOp10InstructionDesc.aliases:
+			return {}
+
+	def rewrite_operands_strings(self, mnem, opstrs):
+		if mnem == 'bitop_unary': # bitop_unary can't be handled by bitop10
+			return self.members[0].rewrite_operands_strings(mnem, opstrs)
+		return self.members[-1].rewrite_operands_strings(mnem, opstrs)
+
+	def encode_strings(self, mnem, fields, operand_strings):
+		if mnem == 'bitop_unary': # bitop_unary can't be handled by bitop10
+			return self.members[0].encode_strings(mnem, fields, operand_strings)
+		self.members[-1].encode_strings(mnem, fields, operand_strings)
+
+	def encode_fields(self, fields):
+		if 'op' in fields and fields['op'] in BITOPMOV_OPS:
+			return self.members[0].encode_fields(fields)
+		return super().encode_fields(fields)
 
 class IAddSubInstructionDesc(MaskedInstructionDesc):
 
