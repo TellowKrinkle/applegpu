@@ -722,7 +722,7 @@ class InstructionGroup:
 		self.ordered_operands = members[-1].ordered_operands
 
 	def encode_strings(self, mnem, fields, operand_strings):
-		members[-1].encode_strings(mnem, fields, operand_strings)
+		return self.members[-1].encode_strings(mnem, fields, operand_strings)
 
 	def encode_fields(self, fields):
 		for member in self.members[:-1]:
@@ -2956,7 +2956,7 @@ class FFMAInstructionDescBase(MaskedInstructionDesc):
 		has = set()
 		while True:
 			rest, _, suffix = mnem.rpartition('.')
-			if rest and suffix in fields:
+			if rest and suffix in suffixes:
 				has.add(suffixes[suffix])
 				mnem = rest
 			else:
