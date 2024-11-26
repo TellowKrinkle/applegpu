@@ -4115,6 +4115,96 @@ class CmpSelInstructionDesc(InstructionGroup):
 		elif mnem == 'cmpsel':
 			return {}
 
+UNPACK_UNORM_8_16 = {
+	0x0: 'r8unorm_0',            # Unobserved (Apple compiler uses 6)
+	0x1: 'r8unorm_srgb',
+	0x2: 'r16snorm',
+	0x3: 'r8snorm',
+	0x4: 'r16unorm',
+	0x5: 'r8unorm_srgb_5',       # Unobserved (Apple compiler uses 1)
+	0x6: 'r8unorm',
+	0x7: 'r8snorm_7',            # Unobserved (Apple compiler uses 3)
+	0x8: 'rg8unorm_linear_srgb', # Unobserved (Apple compiler prefers srgb_linear)
+	0x9: 'rg8unorm_srgb',
+	0xa: 'rg16snorm',
+	0xb: 'rg8snorm',
+	0xc: 'rg16unorm',
+	0xd: 'rg8unorm_srgb_linear',
+	0xe: 'rg8unorm',
+	0xf: 'rg8snorm_f',           # Unobserved (Apple compiler uses b)
+}
+
+class UnpackDstDesc(FixedDstDesc):
+	documentation_extra_arguments = ['type']
+
+	def __init__(self, name, s_off):
+		super().__init__(name, s_off=s_off)
+
+	def get_count(self, fields):
+		# Note: Alignment-wise, this is actually like an r32 (e.g. you can't do r0h_r1l), but this helps keep the assembly readable
+		if fields['type'] & 8:
+			return 2
+		else:
+			return 1
+
+	def encode_string(self, fields, opstr):
+		reg = try_parse_register_tuple(opstr)
+		if not reg:
+			raise Exception(f'invalid UnpackDstDesc {opstr}')
+		super().encode_reg(fields, reg.get_with_flags(0))
+		count = self.get_count(fields)
+		if len(reg) != count:
+			unpack_type = UNPACK_UNORM_8_16[fields['type']]
+			raise Exception(f'Incompatible register count {len(reg)} (of {opstr}) for unpack {unpack_type}')
+
+class UnpackSrcDesc(FixedSrcDesc):
+	def __init__(self, name, bit_off, d_off, s_off):
+		super().__init__(name, bit_off, d_off=d_off, s_off=s_off)
+
+	def get_size(self, fields):
+		return 0
+
+	def get_count(self, fields):
+		# Note: Alignment-wise, this is actually like an r32 (e.g. you can't do r0h_r1l), but this helps keep the assembly readable
+		if fields[self.name + 's']:
+			return 2
+		else:
+			return 1
+
+	def encode_string(self, fields, opstr):
+		reg = try_parse_register_tuple(opstr)
+		if not reg:
+			raise Exception(f'invalid UnpackSrcDesc {opstr}')
+		if not isinstance(reg[0], Reg16):
+			raise Exception(f'invalid UnpackSrcDesc register {opstr}')
+		super().encode_reg(fields, reg.get_with_flags(0))
+		nregs = len(reg)
+		if nregs not in (1, 2):
+			raise Exception(f'invalid UnpackSrcDesc register count {nregs} (of {opstr})')
+		# Note: It's valid hardware-wise to mismatch this with type.  Kind of pointless (it zero-extends the register), but it does work.
+		fields[self.name + 's'] = nregs - 1
+
+@register
+class UnpackUnormInstructionDesc(MaskedInstructionDesc):
+	documentation_begin_group = 'Pixel Pack/Unpack Instructions'
+	documentation_name = 'Unpack Unorm 8/16'
+
+	names = set(UNPACK_UNORM_8_16.values())
+
+	def __init__(self):
+		super().__init__('unpack', size=8)
+		self.add_constant(0, 12, 0x417)
+		self.add_operand(EnumDesc('type', 60, 4, UNPACK_UNORM_8_16))
+		self.add_operand(UnpackDstDesc('D', s_off=50))
+		self.add_operand(UnpackSrcDesc('A', 41, d_off=52, s_off=51))
+		self.add_operand(WaitDesc('W', lo=12, hi=15))
+		self.add_unsure_constant(56, 4, 0b1010)
+		self.add_unsure_constant(18, 5, 0b10101)
+
+	def fields_for_mnem(self, mnem, operand_strings):
+		if self.name == mnem and operand_strings[0] in self.names:
+			return {}
+
 @register
 class StopInstructionDesc(InstructionDesc):
 	documentation_begin_group = 'Other Instructions'
