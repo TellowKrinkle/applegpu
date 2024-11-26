@@ -1903,6 +1903,22 @@ class NewShiftDesc(OperandDesc):
 		shift = fields['s']
 		return 'lsl %d' % (shift) if shift else 'lsl 4'
 
+	def encode_string(self, fields, opstr):
+		assert(opstr.startswith('lsl ')) # If not, we should have inserted an 'lsl 0' in encode_insert_optional_default
+		try:
+			s = int(opstr[4:])
+			if s == 0:
+				pass
+			elif s == 4:
+				fields['s'] = 0
+			else:
+				fields['s'] = s
+		except ValueError:
+			raise Exception(f'invalid ShiftDesc {opstr}')
+
+	def encode_insert_optional_default(self, opstr):
+		if not opstr.startswith('lsl '):
+			return 'lsl 0'
 
 class MaskDesc(OperandDesc):
 	documentation_no_name = True
@@ -2805,7 +2821,7 @@ class DeviceStoreInstructionDesc(DeviceLoadStoreInstructionDesc):
 
 
 class NewALUDstDesc(AbstractSrcOperandDesc):
-	def __init__(self, name):
+	def __init__(self, name, s_off):
 		super().__init__(name)
 
 		# destination bits
@@ -2816,7 +2832,7 @@ class NewALUDstDesc(AbstractSrcOperandDesc):
 
 		self.add_field(32, 1, self.name + 'c') # cache (or uniform register high)
 		self.add_field(33, 1, self.name + 'r') # 1 = GPR, 0 = UReg
-		self.add_field(59, 2, self.name + 's') # size: 0 = 16-bit, 1 = 32-bit, 2 = 64-bit
+		self.add_field(s_off, 2, self.name + 's') # size: 0 = 16-bit, 1 = 32-bit, 2 = 64-bit
 
 
 	def get_size(self, fields):
@@ -2851,6 +2867,35 @@ class NewALUDstDesc(AbstractSrcOperandDesc):
 				r.flags.append(CACHE_FLAG)
 
 		return r
+
+	def encode_reg(self, fields, reg):
+		u16 = isinstance(reg, UReg16)
+		u32 = isinstance(reg, UReg32)
+		u64 = isinstance(reg, UReg64) # TODO: is this valid?
+		r16 = isinstance(reg, Reg16)
+		r32 = isinstance(reg, Reg32)
+		r64 = isinstance(reg, Reg64)
+		r = r16 or r32 or r64
+		s = 0
+		if u32 or r32:
+			s = 1
+		elif u64 or r64:
+			s = 2
+
+		value = reg.n
+		if s:
+			value <<= 1
+		fields[self.name] = value
+		fields[self.name + 'c'] = CACHE_FLAG in reg.flags
+		fields[self.name + 'r'] = r
+		fields[self.name + 's'] = s
+
+	def encode_string(self, fields, opstr):
+		reg = try_parse_register(opstr)
+		if reg:
+			self.encode_reg(fields, reg)
+		else:
+			raise Exception(f'invalid VariableDstDesc {opstr}')
 
 class NewALUSrcDesc(AbstractSrcOperandDesc):
 	def __init__(self, name, bit_off, s_off, t_off, r_off, is_64):
@@ -2918,6 +2963,52 @@ class NewALUSrcDesc(AbstractSrcOperandDesc):
 		if sx_bit:
 			r.flags.append(SIGN_EXTEND_FLAG)
 		return r
+
+	def encode_reg(self, fields, reg):
+		u16 = isinstance(reg, UReg16)
+		u32 = isinstance(reg, UReg32)
+		u64 = isinstance(reg, UReg64) # TODO: is this valid?
+		r16 = isinstance(reg, Reg16)
+		r32 = isinstance(reg, Reg32)
+		r64 = isinstance(reg, Reg64)
+		r = r16 or r32 or r64
+		s = 0
+		if u32 or r32:
+			s = 1
+		elif u64 or r64:
+			s = 2
+		value = reg.n
+		if s:
+			value <<= 1
+		fields[self.name] = value & 0xFF
+		if r:
+			fields[self.name + 'c'] = CACHE_FLAG in reg.flags
+			fields[self.name + 't'] = DISCARD_FLAG in reg.flags
+		else:
+			fields[self.name + 'c'] = value >> 8
+			fields[self.name + 't'] = 1
+		fields[self.name + 'sx'] = SIGN_EXTEND_FLAG in reg.flags
+		fields[self.name + 'r'] = r
+		fields[self.name + 's'] = s
+
+	def encode_imm(self, fields, imm):
+		fields[self.name] = imm & 0xff
+		fields[self.name + 'sx'] = 0
+		fields[self.name + 'r'] = 0
+		fields[self.name + 's'] = 0
+		fields[self.name + 't'] = 0
+		fields[self.name + 'c'] = 0
+
+	def encode_string(self, fields, opstr):
+		reg = try_parse_register(opstr)
+		if reg:
+			self.encode_reg(fields, reg)
+		else:
+			imm = try_parse_integer(opstr)
+			if imm is not None:
+				self.encode_imm(fields, imm)
+			else:
+				raise Exception(f'invalid BitOpSrcDesc {opstr}')
 
 class NewFloatSrcDesc(VariableSrcDesc):
 	def is_int(self, fields):
@@ -3249,7 +3340,49 @@ class BitOpInstructionDesc(InstructionGroup):
 			return self.members[0].encode_fields(fields)
 		return super().encode_fields(fields)
 
-class IAddSubInstructionDesc(MaskedInstructionDesc):
+class IAddInstructionDescBase(MaskedInstructionDesc):
+
+	def fields_to_mnem_suffix(self, fields):
+		suffix = ''
+
+		if fields.get('S', 0):
+			suffix += '.sat'
+
+		if fields.get('q1', 0) == 0 and fields.get('q2', 0) == 0:
+			suffix += '.first'
+		elif fields.get('q1', 0) != fields.get('q2', 0):
+			# untested: can this happen?
+			if fields.get('q1', 0):
+				suffix += '.q1'
+			if fields.get('q2', 0):
+				suffix += '.q2'
+
+		return suffix
+
+	def fields_for_mnem(self, mnem, operand_strings):
+		S = 0
+		# TODO: assembling with .q1 or .q2 is currently broken, because
+		# they default to being set and are disabled by .first
+		suffixes = {'sat': 'S', 'q1': 'q1', 'q2': 'q2'}
+		has = {'q1', 'q2'}
+		while True:
+			rest, _, suffix = mnem.rpartition('.')
+			if rest and suffix in suffixes:
+				has.add(suffixes[suffix])
+				mnem = rest
+			elif rest and suffix == 'first':
+				has -= {'q1', 'q2'}
+				mnem = rest
+			else:
+				break
+		fields = self.fields_for_mnem_base(mnem)
+		if fields is not None:
+			for suffix in set(suffixes.values()):
+				fields[suffix] = suffix in has
+		return fields
+
+
+class IAddSubInstructionDesc(IAddInstructionDescBase):
 
 	def fields_to_mnem_base(self, fields):
 		return 'iadd' if fields['P'] else 'isub'
@@ -3260,6 +3393,10 @@ class IAddSubInstructionDesc(MaskedInstructionDesc):
 
 	def __init__(self, mnem, imm, is_64=False, is_shifted=False):
 		super().__init__(mnem, size=10)
+
+		self.is_64 = is_64
+		self.is_shifted = is_shifted
+
 		self.add_constant(0, 7, 0b0011111)
 		self.add_constant(8, 1, 0b1)
 
@@ -3268,7 +3405,7 @@ class IAddSubInstructionDesc(MaskedInstructionDesc):
 		self.add_field(20, 1, 'q1')
 		self.add_field(22, 1, 'q2')
 
-		self.add_operand(NewALUDstDesc('D'))
+		self.add_operand(NewALUDstDesc('D', s_off=59))
 
 		if is_64:
 			self.add_constant(59, 2, 0b10)
@@ -3296,40 +3433,15 @@ class IAddSubInstructionDesc(MaskedInstructionDesc):
 
 		self.add_field(7, 1, 'P')
 
-
-	def fields_to_mnem_suffix(self, fields):
-		suffix = ''
-
-		if fields.get('S', 0):
-			suffix += '.sat'
-
-		if fields.get('q0', 0):
-			suffix += '.first'
-
-		return suffix
-
-	def fields_for_mnem(self, mnem, operand_strings):
-		S = 0
-		suffixes = {'sat': 'S', 'q1': 'q1', 'q2': 'q2'}
-		has = set()
-		while True:
-			rest, _, suffix = mnem.rpartition('.')
-			if rest and suffix in suffixes:
-				has.add(suffixes[suffix])
-				mnem = rest
-			else:
-				break
-		fields = self.fields_for_mnem_base(mnem)
-		if fields is not None:
-			for suffix in suffixes.values():
-				fields[suffix] = suffix in has
-		return fields
-
-	def fields_for_mnem_base(self, mnem):
-		if mnem == self.name: return {}
+	def can_encode_fields(self, fields):
+		if fields['Ds'] > 1:
+			return self.is_64
+		if 's' in fields:
+			return self.is_shifted
+		return True
 
 
-@register
+
 class IAddInstructionDesc(IAddSubInstructionDesc):
 	documentation_begin_group = 'Integer Arithmetic'
 	documentation_name = '16/32-bit Integer Add/Subtract'
@@ -3355,7 +3467,6 @@ class IAddInstructionDesc(IAddSubInstructionDesc):
 		D[thread] = result
 	'''
 
-@register
 class IAddShiftedInstructionDesc(IAddSubInstructionDesc):
 	documentation_name = '16/32-bit Integer Add/Subtract with Shift'
 	def __init__(self):
@@ -3379,7 +3490,6 @@ class IAddShiftedInstructionDesc(IAddSubInstructionDesc):
 		D[thread] = result
 	'''
 
-@register
 class IAdd64InstructionDesc(IAddSubInstructionDesc):
 	documentation_name = '64-bit Integer Add/Subtract'
 	def __init__(self):
@@ -3397,6 +3507,54 @@ class IAdd64InstructionDesc(IAddSubInstructionDesc):
 
 		D[thread] = result
 	'''
+
+
+@register
+class IAddInstructionGroup(InstructionGroup):
+	def __init__(self):
+		super().__init__('iadd', [
+			IAddInstructionDesc(),
+			IAdd64InstructionDesc(),
+			IAddShiftedInstructionDesc(),
+		])
+
+
+@register
+class IMAddSubInstructionDesc(IAddInstructionDescBase):
+
+	def fields_to_mnem_base(self, fields):
+		return 'imadd' if fields['P'] else 'imsub'
+
+	def fields_for_mnem_base(self, mnem):
+		if mnem == 'imsub': return {'P': 0}
+		if mnem == 'imadd': return {'P': 1}
+
+	def __init__(self):
+		super().__init__('imadd', size=12)
+		self.add_constant(0, 7, 0b0011111)
+		self.add_constant(8, 1, 0b0)
+
+		# both usually one, zero only on the first op in a function.
+		self.add_field(20, 1, 'q1')
+		self.add_field(22, 1, 'q2')
+
+		self.add_operand(NewALUDstDesc('D', s_off=68))
+
+		self.add_operand(NewALUSrcDesc('A', bit_off=41, s_off=70, t_off=73, r_off=81, is_64=False))
+		self.add_operand(NewALUSrcDesc('B', bit_off=50, s_off=71, t_off=74, r_off=83, is_64=False))
+		self.add_operand(NewALUSrcDesc('C', bit_off=59, s_off=72, t_off=75, r_off=85, is_64=False))
+
+		self.add_field(87, 1, 'S') # saturate
+
+		self.add_operand(WaitDesc('W', lo=12, hi=15))
+
+		self.add_constant(18, 1, 1) # maybe flag?
+		#self.add_field(18, 1, 'q18')
+
+		self.add_constant(77, 1, 1) # maybe flag?
+		#self.add_field(77, 1, 'q77')
+
+		self.add_field(7, 1, 'P')
 
 
 class FFMA4InstructionDesc(FFMAInstructionDescBase):

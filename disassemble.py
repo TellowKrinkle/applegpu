@@ -68,6 +68,7 @@ instruction_lengths = {
 	0x2701: 12, # extr
 	0x2702: 12, # ???
 	0x9f00: 12, # imadd
+	0x1f00: 12, # imsub
 	0xa700: 12, # bfeil
 	0x9703: 12, # quad_ballot?
 	0x9707: 12, # simd_ballot?
