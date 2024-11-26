@@ -380,6 +380,29 @@ def try_parse_register_tuple(s):
 
 	return RegisterTuple(regs, flags=flags)
 
+def register_from_fields(value, size_bits, uniform, count=1, cache=0, discard=0):
+	advance = 1 << size_bits
+	if size_bits == 0:
+		shift = 0
+		reg_type = UReg16 if uniform else Reg16
+	elif size_bits == 1:
+		shift = 1
+		reg_type = UReg32 if uniform else Reg32
+	elif size_bits == 2:
+		shift = 1
+		reg_type = UReg64 if uniform else Reg64
+	else:
+		raise Exception(f'Bad register size {size_bits}')
+	if count == 1:
+		r = reg_type(value >> shift)
+	else:
+		r = RegisterTuple([reg_type((value + i * advance) >> shift) for i in range(count)])
+	if cache:
+		r.flags.append(CACHE_FLAG)
+	if discard:
+		r.flags.append(DISCARD_FLAG)
+	return r
+
 SIMD_WIDTH = 32
 
 class AsmInstruction:
@@ -2819,9 +2842,9 @@ class DeviceStoreInstructionDesc(DeviceLoadStoreInstructionDesc):
 	q0 -> I thought I've seen this unset on stores before but now I can't get it to happen
 	'''
 
-
-class NewALUDstDesc(AbstractSrcOperandDesc):
-	def __init__(self, name, s_off):
+# Helper superclass for dsts in fixed-length instructions
+class FixedDstDesc(AbstractSrcOperandDesc):
+	def __init__(self, name, r_off=None, s_off=None, s_size=1):
 		super().__init__(name)
 
 		# destination bits
@@ -2831,40 +2854,31 @@ class NewALUDstDesc(AbstractSrcOperandDesc):
 		])
 
 		self.add_field(32, 1, self.name + 'c') # cache (or uniform register high)
-		self.add_field(33, 1, self.name + 'r') # 1 = GPR, 0 = UReg
-		self.add_field(s_off, 2, self.name + 's') # size: 0 = 16-bit, 1 = 32-bit, 2 = 64-bit
-
+		if r_off is not None:
+			self.add_field(r_off, 1, self.name + 'r') # 1 = GPR, 0 = UReg
+		else:
+			self.add_implicit_field(self.name + 'r', 1)
+		if s_off is not None:
+			self.add_field(s_off, s_size, self.name + 's') # size: 0 = 16-bit, 1 = 32-bit, 2 = 64-bit
 
 	def get_size(self, fields):
 		return fields[self.name + 's']
 
+	def get_count(self, fields):
+		return 1
+
 	def decode(self, fields):
 		value = fields[self.name]
-		uniform_bit = not fields[self.name + 'r'] # is register
-		size_bits = self.get_size(fields)
+		uniform_bit = not fields.get(self.name + 'r', 1) # is register
+		reg_size = self.get_size(fields)
+		reg_count = self.get_count(fields)
 		cache_bit = fields[self.name + 'c']
 
 		if uniform_bit:
 			value |= cache_bit << 8
-			if size_bits == 0:
-				r = UReg16(value)
-			elif size_bits == 1:
-				r = UReg32(value >> 1)
-			elif size_bits == 2:
-				r = UReg64(value >> 1)
-			else:
-				raise Exception(f'unknown size bits for uniform in NewALUDstDesc ({size_bits})')
+			r = register_from_fields(value, size_bits=reg_size, uniform=uniform_bit, count=reg_count)
 		else:
-			if size_bits == 0:
-				r = Reg16(value)
-			elif size_bits == 1:
-				r = Reg32(value >> 1)
-			elif size_bits == 2:
-				r = Reg64(value >> 1)
-			else:
-				raise Exception(f'unknown size bits for register in NewALUDstDesc ({size_bits})')
-			if cache_bit:
-				r.flags.append(CACHE_FLAG)
+			r = register_from_fields(value, size_bits=reg_size, uniform=uniform_bit, count=reg_count, cache=cache_bit)
 
 		return r
 
@@ -2897,11 +2911,9 @@ class NewALUDstDesc(AbstractSrcOperandDesc):
 		else:
 			raise Exception(f'invalid VariableDstDesc {opstr}')
 
-class NewALUSrcDesc(AbstractSrcOperandDesc):
-	def __init__(self, name, bit_off, s_off, t_off, r_off, is_64):
+class FixedSrcDesc(AbstractSrcOperandDesc):
+	def __init__(self, name, bit_off, s_off=None, d_off=None, r_off=None, sx_off=None, s_size=1):
 		super().__init__(name)
-
-		sx_off = r_off + 1
 
 		# destination bits
 		self.add_merged_field(self.name, [
@@ -2911,52 +2923,40 @@ class NewALUSrcDesc(AbstractSrcOperandDesc):
 
 		self.add_field(bit_off+8, 1, self.name + 'c') # cache (or uniform register high)
 
-		if is_64:
-			self.add_field(s_off, 2, self.name + 's')
+		if s_off is not None:
+			self.add_field(s_off, s_size, self.name + 's')
+		if r_off is not None:
+			self.add_field(r_off, 1, self.name + 'r')
 		else:
-			self.add_field(s_off, 1, self.name + 's')
-
-		self.add_field(r_off, 1, self.name + 'r')
-		self.add_field(t_off, 1, self.name + 't')
-		self.add_field(sx_off, 1, self.name + 'sx')
+			self.add_implicit_field(self.name + 'r', 1)
+		if d_off is not None:
+			self.add_field(d_off, 1, self.name + 'd')
+		if sx_off is not None:
+			self.add_field(sx_off, 1, self.name + 'sx')
 
 	def get_size(self, fields):
 		return fields[self.name + 's']
 
+	def get_count(self, fields):
+		return 1
+
 	def decode(self, fields):
 		value = fields[self.name]
-		register_bit = fields[self.name + 'r'] # is register
-		size_bits = self.get_size(fields)
+		register_bit = fields.get(self.name + 'r', 1) # is register
+		reg_size = self.get_size(fields)
+		reg_count = self.get_count(fields)
 		cache_bit = fields[self.name + 'c']
 
-		t_bit = fields[self.name + 't']
-		sx_bit = fields[self.name + 'sx']
+		d_bit = fields.get(self.name + 'd', 0)
+		sx_bit = fields.get(self.name + 'sx', 0)
 
 		if register_bit:
-			if size_bits == 0:
-				r = Reg16(value)
-			elif size_bits == 1:
-				r = Reg32(value >> 1)
-			elif size_bits == 2:
-				r = Reg64(value >> 1)
-			else:
-				raise Exception(f'unknown size bits for register in NewALUDstDesc ({size_bits})')
-			if cache_bit:
-				r.flags.append(CACHE_FLAG)
-			if t_bit:
-				r.flags.append(DISCARD_FLAG)
+			r = register_from_fields(value, size_bits=reg_size, uniform=False, count=reg_count, cache=cache_bit, discard=d_bit)
 		else:
 			value |= cache_bit << 8
 
-			if t_bit:
-				if size_bits == 0:
-					r = UReg16(value)
-				elif size_bits == 1:
-					r = UReg32(value >> 1)
-				elif size_bits == 2:
-					r = UReg64(value >> 1)
-				else:
-					raise Exception(f'unknown size bits for uniform in NewALUDstDesc ({size_bits})')
+			if d_bit:
+				r = register_from_fields(value, size_bits=reg_size, uniform=True, count=reg_count)
 			else:
 				return Immediate(value & 0xff)
 
@@ -2983,10 +2983,10 @@ class NewALUSrcDesc(AbstractSrcOperandDesc):
 		fields[self.name] = value & 0xFF
 		if r:
 			fields[self.name + 'c'] = CACHE_FLAG in reg.flags
-			fields[self.name + 't'] = DISCARD_FLAG in reg.flags
+			fields[self.name + 'd'] = DISCARD_FLAG in reg.flags
 		else:
 			fields[self.name + 'c'] = value >> 8
-			fields[self.name + 't'] = 1
+			fields[self.name + 'd'] = 1
 		fields[self.name + 'sx'] = SIGN_EXTEND_FLAG in reg.flags
 		fields[self.name + 'r'] = r
 		fields[self.name + 's'] = s
@@ -2996,7 +2996,7 @@ class NewALUSrcDesc(AbstractSrcOperandDesc):
 		fields[self.name + 'sx'] = 0
 		fields[self.name + 'r'] = 0
 		fields[self.name + 's'] = 0
-		fields[self.name + 't'] = 0
+		fields[self.name + 'd'] = 0
 		fields[self.name + 'c'] = 0
 
 	def encode_string(self, fields, opstr):
@@ -3008,7 +3008,15 @@ class NewALUSrcDesc(AbstractSrcOperandDesc):
 			if imm is not None:
 				self.encode_imm(fields, imm)
 			else:
-				raise Exception(f'invalid BitOpSrcDesc {opstr}')
+				raise Exception(f'invalid FixedSrcDesc {opstr}')
+
+class NewALUDstDesc(FixedDstDesc):
+	def __init__(self, name, r_off=33, s_off=None):
+		super().__init__(name, r_off=r_off, s_off=s_off, s_size=2)
+
+class NewALUSrcDesc(FixedSrcDesc):
+	def __init__(self, name, bit_off, s_off=None, d_off=None, r_off=None, s_size=1):
+		super().__init__(name, bit_off, s_off=s_off, d_off=d_off, r_off=r_off, sx_off=r_off+1, s_size=s_size)
 
 class NewFloatSrcDesc(VariableSrcDesc):
 	def is_int(self, fields):
@@ -3412,8 +3420,9 @@ class IAddSubInstructionDesc(IAddInstructionDescBase):
 		else:
 			self.add_constant(60, 1, 0)
 
-		self.add_operand(NewALUSrcDesc('A', bit_off=41, s_off=61, t_off=65, r_off=72, is_64=is_64))
-		self.add_operand(NewALUSrcDesc('B', bit_off=50, s_off=63, t_off=66, r_off=74, is_64=is_64))
+		s_size = 2 if is_64 else 1
+		self.add_operand(NewALUSrcDesc('A', bit_off=41, s_off=61, d_off=65, r_off=72, s_size=s_size))
+		self.add_operand(NewALUSrcDesc('B', bit_off=50, s_off=63, d_off=66, r_off=74, s_size=s_size))
 
 		if not is_64:
 			if is_shifted:
@@ -3540,9 +3549,9 @@ class IMAddSubInstructionDesc(IAddInstructionDescBase):
 
 		self.add_operand(NewALUDstDesc('D', s_off=68))
 
-		self.add_operand(NewALUSrcDesc('A', bit_off=41, s_off=70, t_off=73, r_off=81, is_64=False))
-		self.add_operand(NewALUSrcDesc('B', bit_off=50, s_off=71, t_off=74, r_off=83, is_64=False))
-		self.add_operand(NewALUSrcDesc('C', bit_off=59, s_off=72, t_off=75, r_off=85, is_64=False))
+		self.add_operand(NewALUSrcDesc('A', bit_off=41, s_off=70, d_off=73, r_off=81, s_size=1))
+		self.add_operand(NewALUSrcDesc('B', bit_off=50, s_off=71, d_off=74, r_off=83, s_size=1))
+		self.add_operand(NewALUSrcDesc('C', bit_off=59, s_off=72, d_off=75, r_off=85, s_size=1))
 
 		self.add_field(87, 1, 'S') # saturate
 
