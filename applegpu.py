@@ -5,6 +5,7 @@ from srgb import SRGB_TABLE
 
 MAX_OPCODE_LEN = 16
 
+BFLOAT_FLAG = 'bfloat'
 ABS_FLAG = 'abs'
 NEGATE_FLAG = 'neg'
 SIGN_EXTEND_FLAG = 'sx'
@@ -12,6 +13,7 @@ CACHE_FLAG = 'cache'
 DISCARD_FLAG = 'discard'
 
 OPERAND_FLAGS = [
+	BFLOAT_FLAG,
 	ABS_FLAG,
 	NEGATE_FLAG,
 	SIGN_EXTEND_FLAG,
@@ -2912,7 +2914,7 @@ class FixedDstDesc(AbstractSrcOperandDesc):
 			raise Exception(f'invalid VariableDstDesc {opstr}')
 
 class FixedSrcDesc(AbstractSrcOperandDesc):
-	def __init__(self, name, bit_off, s_off=None, d_off=None, r_off=None, sx_off=None, s_size=1):
+	def __init__(self, name, bit_off, s_off=None, d_off=None, r_off=None, sx_off=None, a_off=None, i_off=None, s_size=1):
 		super().__init__(name)
 
 		# destination bits
@@ -2932,13 +2934,23 @@ class FixedSrcDesc(AbstractSrcOperandDesc):
 		if d_off is not None:
 			self.add_field(d_off, 1, self.name + 'd')
 		if sx_off is not None:
-			self.add_field(sx_off, 1, self.name + 'sx')
+			if self.is_float():
+				self.add_field(sx_off, 1, self.name + 'n')
+			else:
+				self.add_field(sx_off, 1, self.name + 'sx')
+		if a_off is not None:
+			self.add_field(a_off, 1, self.name + 'a')
+		if i_off is not None:
+			self.add_field(i_off, 1, self.name + 'i')
 
 	def get_size(self, fields):
 		return fields[self.name + 's']
 
 	def get_count(self, fields):
 		return 1
+
+	def is_float(self):
+		return False
 
 	def decode(self, fields):
 		value = fields[self.name]
@@ -2948,6 +2960,9 @@ class FixedSrcDesc(AbstractSrcOperandDesc):
 		cache_bit = fields[self.name + 'c']
 
 		d_bit = fields.get(self.name + 'd', 0)
+		n_bit = fields.get(self.name + 'n', 0)
+		a_bit = fields.get(self.name + 'a', 0)
+		i_bit = fields.get(self.name + 'i', 0)
 		sx_bit = fields.get(self.name + 'sx', 0)
 
 		if register_bit:
@@ -2958,10 +2973,22 @@ class FixedSrcDesc(AbstractSrcOperandDesc):
 			if d_bit:
 				r = register_from_fields(value, size_bits=reg_size, uniform=True, count=reg_count)
 			else:
-				return Immediate(value & 0xff)
+				if self.is_float():
+					return Immediate(decode_float_immediate(value & 0xff))
+				else:
+					return Immediate(value & 0xff)
 
 		if sx_bit:
 			r.flags.append(SIGN_EXTEND_FLAG)
+		if self.is_float():
+			if reg_size == 0 and not i_bit:
+				r.flags.append(BFLOAT_FLAG)
+			elif reg_size != 0:
+				assert(not i_bit) # There's only one type of 32-bit float
+		if a_bit:
+			r.flags.append(ABS_FLAG)
+		if n_bit:
+			r.flags.append(NEGATE_FLAG)
 		return r
 
 	def encode_reg(self, fields, reg):
@@ -2990,6 +3017,10 @@ class FixedSrcDesc(AbstractSrcOperandDesc):
 		fields[self.name + 'sx'] = SIGN_EXTEND_FLAG in reg.flags
 		fields[self.name + 'r'] = r
 		fields[self.name + 's'] = s
+		fields[self.name + 'n'] = NEGATE_FLAG in reg.flags
+		fields[self.name + 'a'] = ABS_FLAG in reg.flags
+		if self.is_float():
+			fields[self.name + 'i'] = BFLOAT_FLAG not in reg.flags and s == 0
 
 	def encode_imm(self, fields, imm):
 		fields[self.name] = imm & 0xff
@@ -2998,13 +3029,23 @@ class FixedSrcDesc(AbstractSrcOperandDesc):
 		fields[self.name + 's'] = 0
 		fields[self.name + 'd'] = 0
 		fields[self.name + 'c'] = 0
+		fields[self.name + 'n'] = 0
+		fields[self.name + 'a'] = 0
+		if self.is_float():
+			fields[self.name + 'i'] = 0
 
 	def encode_string(self, fields, opstr):
 		reg = try_parse_register(opstr)
 		if reg:
 			self.encode_reg(fields, reg)
 		else:
-			imm = try_parse_integer(opstr)
+			if self.is_float():
+				try:
+					imm = float_immediate_lookup[opstr]
+				except KeyError:
+					imm = None
+			else:
+				imm = try_parse_integer(opstr)
 			if imm is not None:
 				self.encode_imm(fields, imm)
 			else:
@@ -4115,24 +4156,67 @@ class CmpSelInstructionDesc(InstructionGroup):
 		elif mnem == 'cmpsel':
 			return {}
 
-UNPACK_UNORM_8_16 = {
-	0x0: 'r8unorm_0',            # Unobserved (Apple compiler uses 6)
-	0x1: 'r8unorm_srgb',
-	0x2: 'r16snorm',
-	0x3: 'r8snorm',
-	0x4: 'r16unorm',
-	0x5: 'r8unorm_srgb_5',       # Unobserved (Apple compiler uses 1)
-	0x6: 'r8unorm',
-	0x7: 'r8snorm_7',            # Unobserved (Apple compiler uses 3)
-	0x8: 'rg8unorm_linear_srgb', # Unobserved (Apple compiler prefers srgb_linear)
-	0x9: 'rg8unorm_srgb',
-	0xa: 'rg16snorm',
-	0xb: 'rg8snorm',
-	0xc: 'rg16unorm',
-	0xd: 'rg8unorm_srgb_linear',
-	0xe: 'rg8unorm',
-	0xf: 'rg8snorm_f',           # Unobserved (Apple compiler uses b)
-}
+class UnormPackingEnumDesc(OperandDesc):
+	types_rg = {
+		0: 'rg8unorm_linear_srgb', # Unobserved (Apple compiler prefers srgb_linear)
+		1: 'rg8unorm_srgb',
+		2: 'rg16snorm',
+		3: 'rg8snorm',
+		4: 'rg16unorm',
+		5: 'rg8unorm_srgb_linear',
+		6: 'rg8unorm',
+		7: 'rg8snorm_7',           # Unobserved (Apple compiler uses 3)
+	}
+	types_r = {
+		0: 'r8unorm_0',            # Unobserved (Apple compiler uses 6)
+		1: 'r8unorm_srgb',
+		2: 'r16snorm',
+		3: 'r8snorm',
+		4: 'r16unorm',
+		5: 'r8unorm_srgb_5',       # Unobserved (Apple compiler uses 1)
+		6: 'r8unorm',
+		7: 'r8snorm_7',            # Unobserved (Apple compiler uses 3)
+	}
+	names_rg = { v: k for k, v in types_rg.items() }
+	names_r  = { v: k for k, v in types_r.items()  }
+	names = set(types_r.values()) | set(types_rg.values())
+
+	def __init__(self, name, start):
+		super().__init__(name)
+		self.add_field(start, 3, name)
+
+	def get_count(self, fields):
+		return 1 + fields['n']
+
+	@classmethod
+	def get_enum_name(cls, type, count):
+		if count > 1:
+			return cls.types_rg[type]
+		else:
+			return cls.types_r[type]
+
+	def decode(self, fields):
+		return self.get_enum_name(fields[self.name], self.get_count(fields))
+
+	def encode(self, fields, value, count):
+		fields[self.name] = value
+
+	def encode_string(self, fields, opstr):
+		if opstr in self.names_rg:
+			self.encode(fields, self.names_rg[opstr], 2)
+		elif opstr in self.names_r:
+			self.encode(fields, self.names_r[opstr], 1)
+		else:
+			raise Exception(f'invalid unorm packing {opstr}')
+
+class UnpackUnormPackingEnumDesc(UnormPackingEnumDesc):
+	def __init__(self, name, start):
+		super().__init__(name, start)
+		self.add_field(start + 3, 1, 'n')
+
+	def encode(self, fields, value, count):
+		super().encode(fields, value, count)
+		fields['n'] = count - 1
 
 class UnpackDstDesc(FixedDstDesc):
 	documentation_extra_arguments = ['type']
@@ -4142,7 +4226,7 @@ class UnpackDstDesc(FixedDstDesc):
 
 	def get_count(self, fields):
 		# Note: Alignment-wise, this is actually like an r32 (e.g. you can't do r0h_r1l), but this helps keep the assembly readable
-		if fields['type'] & 8:
+		if fields['n']:
 			return 2
 		else:
 			return 1
@@ -4154,7 +4238,7 @@ class UnpackDstDesc(FixedDstDesc):
 		super().encode_reg(fields, reg.get_with_flags(0))
 		count = self.get_count(fields)
 		if len(reg) != count:
-			unpack_type = UNPACK_UNORM_8_16[fields['type']]
+			unpack_type = UnormPackingEnumDesc.get_enum_name(fields['type'], self.get_count(fields))
 			raise Exception(f'Incompatible register count {len(reg)} (of {opstr}) for unpack {unpack_type}')
 
 class UnpackSrcDesc(FixedSrcDesc):
@@ -4189,12 +4273,10 @@ class UnpackUnormInstructionDesc(MaskedInstructionDesc):
 	documentation_begin_group = 'Pixel Pack/Unpack Instructions'
 	documentation_name = 'Unpack Unorm 8/16'
 
-	names = set(UNPACK_UNORM_8_16.values())
-
 	def __init__(self):
 		super().__init__('unpack', size=8)
 		self.add_constant(0, 12, 0x417)
-		self.add_operand(EnumDesc('type', 60, 4, UNPACK_UNORM_8_16))
+		self.add_operand(UnpackUnormPackingEnumDesc('type', 60))
 		self.add_operand(UnpackDstDesc('D', s_off=50))
 		self.add_operand(UnpackSrcDesc('A', 41, d_off=52, s_off=51))
 		self.add_operand(WaitDesc('W', lo=12, hi=15))
@@ -4202,8 +4284,117 @@ class UnpackUnormInstructionDesc(MaskedInstructionDesc):
 		self.add_unsure_constant(18, 5, 0b10101)
 
 	def fields_for_mnem(self, mnem, operand_strings):
-		if self.name == mnem and operand_strings[0] in self.names:
+		if self.name == mnem and operand_strings[0] in UnormPackingEnumDesc.names:
 			return {}
+
+class PackUnormPackingEnumDesc(UnormPackingEnumDesc):
+	documentation_extra_arguments = ['Br', 'Bu']
+
+	def __init__(self, name, start):
+		super().__init__(name, start)
+
+	def get_count(self, fields):
+		if fields['Br'] or fields['Bu']:
+			return 2
+		return 1
+
+	def encode(self, fields, value, count):
+		super().encode(fields, value, count)
+		if count == 1:
+			fields['Br'] = 0
+			fields['Bu'] = 0
+
+class PackDstDesc(FixedDstDesc):
+	documentation_extra_arguments = ['type', 'Br', 'Bu']
+
+	def get_size(self, fields):
+		return 0
+
+	def get_count(self, fields):
+		if not fields.get('Br', 1) and not fields.get('Bu', 1):
+			return 1
+		if UnormPackingEnumDesc.types_rg[fields['type']].startswith('rg16'):
+			return 2
+		else:
+			return 1
+
+	def encode_string(self, fields, opstr):
+		reg = try_parse_register_tuple(opstr)
+		if not reg:
+			raise Exception(f'invalid PackSrcDesc {opstr}')
+		if not isinstance(reg[0], Reg16):
+			raise Exception(f'invalid PackSrcDesc register {opstr}')
+		super().encode_reg(fields, reg.get_with_flags(0))
+		nregs = len(reg)
+		if nregs != self.get_count(fields):
+			pack_type = UnormPackingEnumDesc.get_enum_name(fields['type'], self.get_count(fields))
+			raise Exception(f'Incompatible register count {len(reg)} (of {opstr}) for pack {pack_type}')
+		del fields[self.name + 's']
+
+class PackSrcDesc(FixedSrcDesc):
+	def __init__(self, name, bit_off, s_off=None, d_off=None, r_off=None, n_off=None, a_off=None, i_off=None, u_off=None):
+		super().__init__(name, bit_off,
+			s_off=s_off,
+			d_off=d_off,
+			r_off=r_off,
+			sx_off=n_off,
+			a_off=a_off,
+			i_off=i_off,
+		)
+		# If Br and Bu, Br takes precedence
+		# If neither Br nor Bu, only one value is packed
+		self.with_u = u_off is not None
+		if u_off is not None:
+			self.add_field(u_off, 1, self.name + 'u')
+
+	def is_float(self):
+		return True
+
+	def decode(self, fields):
+		res = super().decode(fields)
+		return res
+
+	def encode_string(self, fields, opstr):
+		super().encode_string(fields, opstr)
+		if self.with_u:
+			if self.name + 'u' in fields:
+				# Must have been set by PackUnormPackingEnumDesc, in which case both Bu and Br are must be 0
+				if fields[self.name + 'r']:
+					raise Exception(f'single-element packing incompatible with register {opstr}')
+			else:
+				fields[self.name + 'u'] = not fields[self.name + 'r']
+
+@register
+class PackUnormInstructionDesc(MaskedInstructionDesc):
+	documentation_name = 'Pack Unorm 8/16'
+
+	def __init__(self):
+		super().__init__('pack', size=10)
+		self.add_constant(0, 12, 0x497)
+		self.add_operand(PackUnormPackingEnumDesc('type', 77))
+		self.add_operand(PackDstDesc('D', r_off=33)) # Dr not tested, but it's always set by the compiler, in the right place, and stops writing output registers if unset, so...
+		self.add_operand(PackSrcDesc('A', 41, d_off=63, i_off=59, s_off=60, r_off=70, n_off=72, a_off=71))
+		self.add_operand(PackSrcDesc('B', 50, d_off=64, i_off=61, s_off=62, r_off=73, n_off=76, a_off=74, u_off=75))
+		self.add_operand(WaitDesc('W', lo=12, hi=15))
+		self.add_unsure_constant(18, 5, 0b10101)
+		self.add_unsure_constant(66, 1, 1)
+
+	def fields_for_mnem(self, mnem, operand_strings):
+		if self.name == mnem and operand_strings[0] in UnormPackingEnumDesc.names:
+			return {}
+
+	def rewrite_operands_strings(self, mnem, operand_strings):
+		if operand_strings[0] in UnormPackingEnumDesc.names_r:
+			if len(operand_strings) < 4 or operand_strings[3].startswith('wait '):
+				operand_strings.insert(3, '0.0')
+		return super().rewrite_operands_strings(mnem, operand_strings)
+
+	def fields_to_operands(self, fields):
+		operands = super().fields_to_operands(fields)
+		if not fields['Bu'] and not fields['Br']:
+			if str(operands[3]) == '0.0':
+				del operands[3]
+		return operands
 
 @register
 class StopInstructionDesc(InstructionDesc):
