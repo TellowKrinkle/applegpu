@@ -2876,6 +2876,9 @@ class FixedDstDesc(AbstractSrcOperandDesc):
 		reg_count = self.get_count(fields)
 		cache_bit = fields[self.name + 'c']
 
+		if reg_size == 0 and reg_count > 1:
+			value &= ~1 # All known uses of register tuples in ALU instructions still require 32-bit alignment
+
 		if uniform_bit:
 			value |= cache_bit << 8
 			r = register_from_fields(value, size_bits=reg_size, uniform=uniform_bit, count=reg_count)
@@ -2964,6 +2967,9 @@ class FixedSrcDesc(AbstractSrcOperandDesc):
 		a_bit = fields.get(self.name + 'a', 0)
 		i_bit = fields.get(self.name + 'i', 0)
 		sx_bit = fields.get(self.name + 'sx', 0)
+
+		if reg_size == 0 and reg_count > 1:
+			value &= ~1 # All known uses of register tuples in ALU instructions still require 32-bit alignment
 
 		if register_bit:
 			r = register_from_fields(value, size_bits=reg_size, uniform=False, count=reg_count, cache=cache_bit, discard=d_bit)
@@ -4237,6 +4243,8 @@ class UnpackDstDesc(FixedDstDesc):
 			raise Exception(f'invalid UnpackDstDesc {opstr}')
 		super().encode_reg(fields, reg.get_with_flags(0))
 		count = self.get_count(fields)
+		if count == 2 and reg[0].n & 1:
+			raise Exception(f'Unpack requires 32-bit alignment of {opstr}')
 		if len(reg) != count:
 			unpack_type = UnormPackingEnumDesc.get_enum_name(fields['type'], self.get_count(fields))
 			raise Exception(f'Incompatible register count {len(reg)} (of {opstr}) for unpack {unpack_type}')
@@ -4263,6 +4271,8 @@ class UnpackSrcDesc(FixedSrcDesc):
 			raise Exception(f'invalid UnpackSrcDesc register {opstr}')
 		super().encode_reg(fields, reg.get_with_flags(0))
 		nregs = len(reg)
+		if nregs == 2 and reg[0].n & 1:
+			raise Exception(f'Unpack requires 32-bit alignment of {opstr}')
 		if nregs not in (1, 2):
 			raise Exception(f'invalid UnpackSrcDesc register count {nregs} (of {opstr})')
 		# Note: It's valid hardware-wise to mismatch this with type.  Kind of pointless (it zero-extends the register), but it does work.
@@ -4326,6 +4336,8 @@ class PackDstDesc(FixedDstDesc):
 			raise Exception(f'invalid PackSrcDesc register {opstr}')
 		super().encode_reg(fields, reg.get_with_flags(0))
 		nregs = len(reg)
+		if nregs == 2 and reg[0].n & 1:
+			raise Exception(f'Unpack requires 32-bit alignment of {opstr}')
 		if nregs != self.get_count(fields):
 			pack_type = UnormPackingEnumDesc.get_enum_name(fields['type'], self.get_count(fields))
 			raise Exception(f'Incompatible register count {len(reg)} (of {opstr}) for pack {pack_type}')
@@ -4349,10 +4361,6 @@ class PackSrcDesc(FixedSrcDesc):
 
 	def is_float(self):
 		return True
-
-	def decode(self, fields):
-		res = super().decode(fields)
-		return res
 
 	def encode_string(self, fields, opstr):
 		super().encode_string(fields, opstr)
