@@ -2160,8 +2160,6 @@ class FConditionDesc(BaseConditionDesc):
 
 
 class MemoryShiftDesc(OperandDesc):
-	documentation_skip = True
-
 	def __init__(self, name, offset):
 		super().__init__(name)
 		self.add_field(offset, 3, self.name)
