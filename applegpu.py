@@ -1874,6 +1874,8 @@ class EnumDesc(FieldDesc):
 	def __init__(self, name, start, size, values):
 		super().__init__(name, start, size)
 		self.values = values
+		if isinstance(start, list) and len(start) > 1:
+			self.documentation_skip = False
 
 	def decode(self, fields):
 		v = fields[self.name]
