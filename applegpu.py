@@ -2856,18 +2856,28 @@ class FixedDstDesc(AbstractSrcOperandDesc):
 		super().__init__(name)
 
 		# destination bits
-		self.add_merged_field(self.name, [
-			(24, 1, self.name + 'l'),
-			(25, 7, self.name)
-		])
+		if self.has_l():
+			self.add_merged_field(self.name, [
+				(24, 1, self.name + 'l'),
+				(25, 7, self.name)
+			])
+			self.add_field(32, 1, self.name + 'c')
+		else:
+			self.add_field(24, 7, self.name)
+			self.add_field(31, 1, self.name + 'c') # cache (or uniform register high)
 
-		self.add_field(32, 1, self.name + 'c') # cache (or uniform register high)
 		if r_off is not None:
 			self.add_field(r_off, 1, self.name + 'r') # 1 = GPR, 0 = UReg
 		else:
 			self.add_implicit_field(self.name + 'r', 1)
 		if s_off is not None:
 			self.add_field(s_off, s_size, self.name + 's') # size: 0 = 16-bit, 1 = 32-bit, 2 = 64-bit
+
+	def has_l(self):
+		return True
+
+	def value_shift(self):
+		return 0 if self.has_l() else 1
 
 	def get_size(self, fields):
 		return fields[self.name + 's']
@@ -2876,7 +2886,7 @@ class FixedDstDesc(AbstractSrcOperandDesc):
 		return 1
 
 	def decode(self, fields):
-		value = fields[self.name]
+		value = fields[self.name] << self.value_shift()
 		uniform_bit = not fields.get(self.name + 'r', 1) # is register
 		reg_size = self.get_size(fields)
 		reg_count = self.get_count(fields)
@@ -2910,7 +2920,9 @@ class FixedDstDesc(AbstractSrcOperandDesc):
 		value = reg.n
 		if s:
 			value <<= 1
-		fields[self.name] = value
+		if not self.has_l() and (value & 1):
+			raise Exception(f'Register {reg} must be 32-bit aligned')
+		fields[self.name] = value >> self.value_shift()
 		fields[self.name + 'c'] = CACHE_FLAG in reg.flags
 		fields[self.name + 'r'] = r
 		fields[self.name + 's'] = s
@@ -2927,12 +2939,15 @@ class FixedSrcDesc(AbstractSrcOperandDesc):
 		super().__init__(name)
 
 		# destination bits
-		self.add_merged_field(self.name, [
-			(bit_off, 1, self.name + 'l'),
-			(bit_off+1, 7, self.name)
-		])
-
-		self.add_field(bit_off+8, 1, self.name + 'c') # cache (or uniform register high)
+		if self.has_l():
+			self.add_merged_field(self.name, [
+				(bit_off, 1, self.name + 'l'),
+				(bit_off+1, 7, self.name)
+			])
+			self.add_field(bit_off+8, 1, self.name + 'c') # cache (or uniform register high)
+		else:
+			self.add_field(bit_off, 7, self.name)
+			self.add_field(bit_off+7, 1, self.name + 'c') # cache (or uniform register high)
 
 		if s_off is not None:
 			self.add_field(s_off, s_size, self.name + 's')
@@ -2952,6 +2967,12 @@ class FixedSrcDesc(AbstractSrcOperandDesc):
 		if i_off is not None:
 			self.add_field(i_off, 1, self.name + 'i')
 
+	def has_l(self):
+		return True
+
+	def value_shift(self):
+		return 0 if self.has_l() else 1
+
 	def get_size(self, fields):
 		return fields[self.name + 's']
 
@@ -2962,7 +2983,7 @@ class FixedSrcDesc(AbstractSrcOperandDesc):
 		return False
 
 	def decode(self, fields):
-		value = fields[self.name]
+		value = fields[self.name] << self.value_shift()
 		register_bit = fields.get(self.name + 'r', 1) # is register
 		reg_size = self.get_size(fields)
 		reg_count = self.get_count(fields)
@@ -3019,7 +3040,9 @@ class FixedSrcDesc(AbstractSrcOperandDesc):
 		value = reg.n
 		if s:
 			value <<= 1
-		fields[self.name] = value & 0xFF
+		if not self.has_l() and (value & 1):
+			raise Exception(f'Register {reg} must be 32-bit aligned')
+		fields[self.name] = (value & 0xFF) >> self.value_shift()
 		if r:
 			fields[self.name + 'c'] = CACHE_FLAG in reg.flags
 			fields[self.name + 'd'] = DISCARD_FLAG in reg.flags
@@ -4221,6 +4244,17 @@ class UnormPackingEnumDesc(OperandDesc):
 		else:
 			raise Exception(f'invalid unorm packing {opstr}')
 
+FLOAT_UNPACK_TYPE = {
+	0: 'rgb10a2_unorm_to_half',
+	1: 'rgb10a2_unorm_to_float',
+	2: 'rgb9e5_to_float',
+	3: 'rg11b10f_to_float',
+	4: 'rgb9e5_to_half',
+	5: 'rg11b10f_to_half',
+	6: 'rgb9e5_to_half_6',   # Unobserved (Apple compiler uses 4)
+	7: 'rg11b10f_to_half_7', # Unobserved (Apple compiler uses 5)
+}
+
 class UnpackUnormPackingEnumDesc(UnormPackingEnumDesc):
 	def __init__(self, name, start):
 		super().__init__(name, start)
@@ -4231,17 +4265,8 @@ class UnpackUnormPackingEnumDesc(UnormPackingEnumDesc):
 		fields['n'] = count - 1
 
 class UnpackDstDesc(FixedDstDesc):
-	documentation_extra_arguments = ['type']
-
-	def __init__(self, name, s_off):
-		super().__init__(name, s_off=s_off)
-
-	def get_count(self, fields):
-		# Note: Alignment-wise, this is actually like an r32 (e.g. you can't do r0h_r1l), but this helps keep the assembly readable
-		if fields['n']:
-			return 2
-		else:
-			return 1
+	def get_enum_name(self, fields):
+		pass
 
 	def encode_string(self, fields, opstr):
 		reg = try_parse_register_tuple(opstr)
@@ -4249,13 +4274,53 @@ class UnpackDstDesc(FixedDstDesc):
 			raise Exception(f'invalid UnpackDstDesc {opstr}')
 		super().encode_reg(fields, reg.get_with_flags(0))
 		count = self.get_count(fields)
-		if count == 2 and reg[0].n & 1:
+		if count >= 2 and reg[0].n & 1:
 			raise Exception(f'Unpack requires 32-bit alignment of {opstr}')
 		if len(reg) != count:
-			unpack_type = UnormPackingEnumDesc.get_enum_name(fields['type'], self.get_count(fields))
+			unpack_type = self.get_enum_name(fields)
 			raise Exception(f'Incompatible register count {len(reg)} (of {opstr}) for unpack {unpack_type}')
 
-class UnpackSrcDesc(FixedSrcDesc):
+class UnpackUnormDstDesc(UnpackDstDesc):
+	documentation_extra_arguments = ['n']
+	def get_count(self, fields):
+		# Note: Alignment-wise, this is actually like an r32 (e.g. you can't do r0h_r1l), but this helps keep the assembly readable
+		if fields['n']:
+			return 2
+		else:
+			return 1
+
+	def get_enum_name(self, fields):
+		return UnormPackingEnumDesc.get_enum_name(fields['type'], self.get_count(fields))
+
+class UnpackFloatDstDesc(UnpackDstDesc):
+	documentation_extra_arguments = ['type']
+	def has_l(self):
+		return False
+	def get_size(self, fields):
+		if 'float' in self.get_enum_name(fields):
+			return 1
+		else:
+			return 0
+	def get_count(self, fields):
+		if self.get_enum_name(fields).startswith('rgb10a2'):
+			return 4
+		else:
+			return 3
+	def get_enum_name(self, fields):
+		return FLOAT_UNPACK_TYPE[fields['type']]
+	def encode_string(self, fields, opstr):
+		reg = try_parse_register_tuple(opstr)
+		if not reg:
+			raise Exception(f'invalid UnpackDstDesc {opstr}')
+		count = self.get_count(fields)
+		super().encode_reg(fields, reg.get_with_flags(0))
+		if fields[self.name + 's'] != self.get_size(fields):
+			raise Exception(f'Incompatible register size {opstr} for unpack {self.get_enum_name(fields)}')
+		if len(reg) != count:
+			raise Exception(f'Incompatible register count {len(reg)} (of {opstr}) for unpack {self.get_enum_name(fields)}')
+		del fields[self.name + 's']
+
+class UnpackUnormSrcDesc(FixedSrcDesc):
 	def __init__(self, name, bit_off, d_off, s_off):
 		super().__init__(name, bit_off, d_off=d_off, s_off=s_off)
 
@@ -4272,17 +4337,21 @@ class UnpackSrcDesc(FixedSrcDesc):
 	def encode_string(self, fields, opstr):
 		reg = try_parse_register_tuple(opstr)
 		if not reg:
-			raise Exception(f'invalid UnpackSrcDesc {opstr}')
+			raise Exception(f'invalid UnpackUnormSrcDesc {opstr}')
 		if not isinstance(reg[0], Reg16):
-			raise Exception(f'invalid UnpackSrcDesc register {opstr}')
+			raise Exception(f'invalid UnpackUnormSrcDesc register {opstr}')
 		super().encode_reg(fields, reg.get_with_flags(0))
 		nregs = len(reg)
 		if nregs == 2 and reg[0].n & 1:
 			raise Exception(f'Unpack requires 32-bit alignment of {opstr}')
 		if nregs not in (1, 2):
-			raise Exception(f'invalid UnpackSrcDesc register count {nregs} (of {opstr})')
+			raise Exception(f'invalid UnpackUnormSrcDesc register count {nregs} (of {opstr})')
 		# Note: It's valid hardware-wise to mismatch this with type.  Kind of pointless (it zero-extends the register), but it does work.
 		fields[self.name + 's'] = nregs - 1
+
+class UnpackFloatSrcDesc(FixedSrcDesc):
+	def has_l(self):
+		return False
 
 @register
 class UnpackUnormInstructionDesc(MaskedInstructionDesc):
@@ -4293,8 +4362,8 @@ class UnpackUnormInstructionDesc(MaskedInstructionDesc):
 		super().__init__('unpack', size=8)
 		self.add_constant(0, 12, 0x417)
 		self.add_operand(UnpackUnormPackingEnumDesc('type', 60))
-		self.add_operand(UnpackDstDesc('D', s_off=50))
-		self.add_operand(UnpackSrcDesc('A', 41, d_off=52, s_off=51))
+		self.add_operand(UnpackUnormDstDesc('D', s_off=50))
+		self.add_operand(UnpackUnormSrcDesc('A', 41, d_off=52, s_off=51))
 		self.add_operand(WaitDesc('W', lo=12, hi=15))
 		self.add_unsure_constant(56, 4, 0b1010)
 		self.add_unsure_constant(18, 5, 0b10101)
@@ -4302,6 +4371,23 @@ class UnpackUnormInstructionDesc(MaskedInstructionDesc):
 	def fields_for_mnem(self, mnem, operand_strings):
 		if self.name == mnem and operand_strings[0] in UnormPackingEnumDesc.names:
 			return {}
+
+@register
+class UnpackFloatInstructionDesc(MaskedInstructionDesc):
+	documentation_name = 'Unpack Float/RGB10A2'
+	def __init__(self):
+		super().__init__('unpack', size=8)
+		self.add_constant(0, 12, 0x627)
+		self.add_operand(EnumDesc('type', [
+			(49, 2, 'tl'),
+			(58, 1, 'th'),
+		], None, FLOAT_UNPACK_TYPE))
+		self.add_operand(UnpackFloatDstDesc('D', r_off=32))
+		self.add_operand(UnpackFloatSrcDesc('A', 41, d_off=52, s_off=51))
+		self.add_operand(WaitDesc('W', lo=12, hi=15))
+		self.add_unsure_constant(59, 1, 1)
+		self.add_unsure_constant(54, 1, 1)
+		self.add_unsure_constant(18, 5, 0b10101)
 
 class PackUnormPackingEnumDesc(UnormPackingEnumDesc):
 	documentation_extra_arguments = ['Br', 'Bu']
