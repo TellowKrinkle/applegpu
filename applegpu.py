@@ -4255,6 +4255,13 @@ FLOAT_UNPACK_TYPE = {
 	7: 'rg11b10f_to_half_7', # Unobserved (Apple compiler uses 5)
 }
 
+FLOAT_PACK_TYPE = {
+	0: 'rgb9e5',
+	1: 'rg11b10f',
+	2: 'rgb10a2_unorm',
+	3: 'rg11b10f_3', # Unobserved (Apple compiler uses 1)
+}
+
 class UnpackUnormPackingEnumDesc(UnormPackingEnumDesc):
 	def __init__(self, name, start):
 		super().__init__(name, start)
@@ -4382,7 +4389,7 @@ class UnpackFloatInstructionDesc(MaskedInstructionDesc):
 			(49, 2, 'tl'),
 			(58, 1, 'th'),
 		], None, FLOAT_UNPACK_TYPE))
-		self.add_operand(UnpackFloatDstDesc('D', r_off=32))
+		self.add_operand(UnpackFloatDstDesc('D', r_off=32)) # Dr not tested, but it's always set by the compiler, in the right place, and stops writing output registers if unset, so...
 		self.add_operand(UnpackFloatSrcDesc('A', 41, d_off=52, s_off=51))
 		self.add_operand(WaitDesc('W', lo=12, hi=15))
 		self.add_unsure_constant(59, 1, 1)
@@ -4423,13 +4430,13 @@ class PackDstDesc(FixedDstDesc):
 	def encode_string(self, fields, opstr):
 		reg = try_parse_register_tuple(opstr)
 		if not reg:
-			raise Exception(f'invalid PackSrcDesc {opstr}')
+			raise Exception(f'invalid PackDstDesc {opstr}')
 		if not isinstance(reg[0], Reg16):
-			raise Exception(f'invalid PackSrcDesc register {opstr}')
+			raise Exception(f'invalid PackDstDesc register {opstr}')
 		super().encode_reg(fields, reg.get_with_flags(0))
 		nregs = len(reg)
 		if nregs == 2 and reg[0].n & 1:
-			raise Exception(f'Unpack requires 32-bit alignment of {opstr}')
+			raise Exception(f'Pack requires 32-bit alignment of {opstr}')
 		if nregs != self.get_count(fields):
 			pack_type = UnormPackingEnumDesc.get_enum_name(fields['type'], self.get_count(fields))
 			raise Exception(f'Incompatible register count {len(reg)} (of {opstr}) for pack {pack_type}')
@@ -4494,6 +4501,36 @@ class PackUnormInstructionDesc(MaskedInstructionDesc):
 		if not fields['Bu'] and not fields['Br']:
 			if str(operands[3]) == '0.0':
 				del operands[3]
+		return operands
+
+@register
+class PackFloatInstructionDesc(MaskedInstructionDesc):
+	documentation_name = 'Pack Float/RGB10A2'
+	names = set(FLOAT_PACK_TYPE.values())
+	def __init__(self):
+		super().__init__('pack', size=14)
+		self.add_constant(0, 12, 0x6A7)
+		self.add_operand(EnumDesc('type', 107, 2, FLOAT_PACK_TYPE))
+		self.add_operand(FixedDstDesc('D', r_off=33, s_off=77)) # Dr not tested, but it's always set by the compiler, in the right place, and stops writing output registers if unset, so...
+		self.add_operand(PackSrcDesc('A', 41, i_off=78, s_off=79, d_off=86, r_off= 95, a_off= 96, n_off= 97))
+		self.add_operand(PackSrcDesc('B', 50, i_off=80, s_off=81, d_off=87, r_off= 98, a_off= 99, n_off=100))
+		self.add_operand(PackSrcDesc('X', 59, i_off=82, s_off=83, d_off=88, r_off=101, a_off=102, n_off=103))
+		self.add_operand(PackSrcDesc('Y', 68, i_off=84, s_off=85, d_off=89, r_off=104, a_off=105, n_off=106))
+		self.add_operand(WaitDesc('W', lo=12, hi=15))
+		self.add_unsure_constant(18, 5, 0b10101)
+		self.add_unsure_constant(91, 1, 1)
+
+	def rewrite_operands_strings(self, mnem, operand_strings):
+		if operand_strings[0] in self.names:
+			if len(operand_strings) < 6 or operand_strings[5].startswith('wait '):
+				operand_strings.insert(5, '0.0')
+		return super().rewrite_operands_strings(mnem, operand_strings)
+
+	def fields_to_operands(self, fields):
+		operands = super().fields_to_operands(fields)
+		if fields['type'] != 2: # rgb10a2
+			if str(operands[5]) == '0.0':
+				del operands[5]
 		return operands
 
 @register
