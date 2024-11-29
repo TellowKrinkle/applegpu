@@ -1141,7 +1141,9 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 			h = (value >> 7) & 1
 			d = DISCARD_FLAG in reg.flags
 			c = CACHE_FLAG in reg.flags
-		fields[self.name] = value & 0x7f
+		if ((value >> self.value_shift) << self.value_shift) != value:
+			raise Exception(f'Register {reg} must be 32-bit aligned')
+		fields[self.name] = (value & 0x7f) >> self.value_shift
 		fields[self.name + 'u'] = u
 		fields[self.name + 's'] = s
 		fields[self.name + 'c'] = c
@@ -1228,7 +1230,9 @@ class VariableDstDesc(AbstractDstOperandDesc):
 		value = reg.n
 		if s:
 			value <<= 1
-		fields[self.name] = value & 0xff
+		if ((value >> self.value_shift) << self.value_shift) != value:
+			raise Exception(f'Register {reg} must be 32-bit aligned')
+		fields[self.name] = (value & 0xff) >> self.value_shift
 		fields[self.name + 'c'] = CACHE_FLAG in reg.flags
 		fields[self.name + 'u'] = u
 		fields[self.name + 's'] = s
