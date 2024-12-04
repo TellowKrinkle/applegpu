@@ -4385,8 +4385,8 @@ class UnpackDstDesc(FixedDstDesc):
 		if count >= 2 and reg[0].n & 1:
 			raise Exception(f'Unpack requires 32-bit alignment of {opstr}')
 		if len(reg) != count:
-			unpack_type = self.get_enum_name(fields)
-			raise Exception(f'Incompatible register count {len(reg)} (of {opstr}) for unpack {unpack_type}')
+			mode = self.get_enum_name(fields)
+			raise Exception(f'Incompatible register count {len(reg)} (of {opstr}) for unpack {mode}')
 
 class UnpackUnormDstDesc(UnpackDstDesc):
 	documentation_extra_arguments = ['n']
@@ -4398,10 +4398,10 @@ class UnpackUnormDstDesc(UnpackDstDesc):
 			return 1
 
 	def get_enum_name(self, fields):
-		return UnormPackingEnumDesc.get_enum_name(fields['type'], self.get_count(fields))
+		return UnormPackingEnumDesc.get_enum_name(fields['mode'], self.get_count(fields))
 
 class UnpackFloatDstDesc(UnpackDstDesc):
-	documentation_extra_arguments = ['type']
+	documentation_extra_arguments = ['mode']
 	def has_l(self):
 		return False
 	def get_size(self, fields):
@@ -4415,7 +4415,7 @@ class UnpackFloatDstDesc(UnpackDstDesc):
 		else:
 			return 3
 	def get_enum_name(self, fields):
-		return FLOAT_UNPACK_TYPE[fields['type']]
+		return FLOAT_UNPACK_TYPE[fields['mode']]
 	def encode_string(self, fields, opstr):
 		reg = try_parse_register_tuple(opstr)
 		if not reg:
@@ -4469,7 +4469,7 @@ class UnpackUnormInstructionDesc(MaskedInstructionDesc):
 	def __init__(self):
 		super().__init__('unpack', size=8)
 		self.add_constant(0, 12, 0x417)
-		self.add_operand(UnpackUnormPackingEnumDesc('type', 60))
+		self.add_operand(UnpackUnormPackingEnumDesc('mode', 60))
 		self.add_operand(UnpackUnormDstDesc('D', s_off=50))
 		self.add_operand(UnpackUnormSrcDesc('A', 41, d_off=52, s_off=51))
 		self.add_operand(WaitDesc('W', lo=12, hi=15))
@@ -4486,9 +4486,9 @@ class UnpackFloatInstructionDesc(MaskedInstructionDesc):
 	def __init__(self):
 		super().__init__('unpack', size=8)
 		self.add_constant(0, 12, 0x627)
-		self.add_operand(EnumDesc('type', [
-			(49, 2, 'tl'),
-			(58, 1, 'th'),
+		self.add_operand(EnumDesc('mode', [
+			(49, 2, 'ml'),
+			(58, 1, 'mh'),
 		], None, FLOAT_UNPACK_TYPE))
 		self.add_operand(UnpackFloatDstDesc('D', r_off=32)) # Dr not tested, but it's always set by the compiler, in the right place, and stops writing output registers if unset, so...
 		self.add_operand(UnpackFloatSrcDesc('A', 41, d_off=52, s_off=51))
@@ -4515,7 +4515,7 @@ class PackUnormPackingEnumDesc(UnormPackingEnumDesc):
 			fields['Bu'] = 0
 
 class PackDstDesc(FixedDstDesc):
-	documentation_extra_arguments = ['type', 'Br', 'Bu']
+	documentation_extra_arguments = ['mode', 'Br', 'Bu']
 
 	def get_size(self, fields):
 		return 0
@@ -4523,7 +4523,7 @@ class PackDstDesc(FixedDstDesc):
 	def get_count(self, fields):
 		if not fields.get('Br', 1) and not fields.get('Bu', 1):
 			return 1
-		if UnormPackingEnumDesc.types_rg[fields['type']].startswith('rg16'):
+		if UnormPackingEnumDesc.types_rg[fields['mode']].startswith('rg16'):
 			return 2
 		else:
 			return 1
@@ -4539,8 +4539,8 @@ class PackDstDesc(FixedDstDesc):
 		if nregs == 2 and reg[0].n & 1:
 			raise Exception(f'Pack requires 32-bit alignment of {opstr}')
 		if nregs != self.get_count(fields):
-			pack_type = UnormPackingEnumDesc.get_enum_name(fields['type'], self.get_count(fields))
-			raise Exception(f'Incompatible register count {len(reg)} (of {opstr}) for pack {pack_type}')
+			mode = UnormPackingEnumDesc.get_enum_name(fields['mode'], self.get_count(fields))
+			raise Exception(f'Incompatible register count {len(reg)} (of {opstr}) for pack {mode}')
 		del fields[self.name + 's']
 
 class PackSrcDesc(FixedSrcDesc):
@@ -4579,7 +4579,7 @@ class PackUnormInstructionDesc(MaskedInstructionDesc):
 	def __init__(self):
 		super().__init__('pack', size=10)
 		self.add_constant(0, 12, 0x497)
-		self.add_operand(PackUnormPackingEnumDesc('type', 77))
+		self.add_operand(PackUnormPackingEnumDesc('mode', 77))
 		self.add_operand(PackDstDesc('D', r_off=33)) # Dr not tested, but it's always set by the compiler, in the right place, and stops writing output registers if unset, so...
 		self.add_operand(PackSrcDesc('A', 41, d_off=63, i_off=59, s_off=60, r_off=70, n_off=72, a_off=71))
 		self.add_operand(PackSrcDesc('B', 50, d_off=64, i_off=61, s_off=62, r_off=73, n_off=76, a_off=74, u_off=75))
@@ -4611,7 +4611,7 @@ class PackFloatInstructionDesc(MaskedInstructionDesc):
 	def __init__(self):
 		super().__init__('pack', size=14)
 		self.add_constant(0, 12, 0x6A7)
-		self.add_operand(EnumDesc('type', 107, 2, FLOAT_PACK_TYPE))
+		self.add_operand(EnumDesc('mode', 107, 2, FLOAT_PACK_TYPE))
 		self.add_operand(FixedDstDesc('D', r_off=33, s_off=77)) # Dr not tested, but it's always set by the compiler, in the right place, and stops writing output registers if unset, so...
 		self.add_operand(PackSrcDesc('A', 41, i_off=78, s_off=79, d_off=86, r_off= 95, a_off= 96, n_off= 97))
 		self.add_operand(PackSrcDesc('B', 50, i_off=80, s_off=81, d_off=87, r_off= 98, a_off= 99, n_off=100))
@@ -4629,7 +4629,7 @@ class PackFloatInstructionDesc(MaskedInstructionDesc):
 
 	def fields_to_operands(self, fields):
 		operands = super().fields_to_operands(fields)
-		if fields['type'] != 2: # rgb10a2
+		if fields['mode'] != 2: # rgb10a2
 			if str(operands[5]) == '0.0':
 				del operands[5]
 		return operands
