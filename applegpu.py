@@ -3084,6 +3084,19 @@ class FixedSrcDesc(AbstractSrcOperandDesc):
 			else:
 				raise Exception(f'invalid FixedSrcDesc {opstr}')
 
+class FixedFloatSrcDesc(FixedSrcDesc):
+	def is_float(self):
+		return True
+	def __init__(self, name, bit_off, s_off=None, d_off=None, r_off=None, n_off=None, a_off=None, i_off=None, u_off=None):
+		super().__init__(name, bit_off,
+			s_off=s_off,
+			d_off=d_off,
+			r_off=r_off,
+			sx_off=n_off,
+			a_off=a_off,
+			i_off=i_off,
+		)
+
 class NewALUDstDesc(FixedDstDesc):
 	def __init__(self, name, r_off=33, s_off=None):
 		super().__init__(name, r_off=r_off, s_off=s_off, s_size=2)
@@ -4188,6 +4201,96 @@ class CmpSelInstructionDesc(InstructionGroup):
 			return {}
 		elif mnem == 'cmpsel':
 			return {}
+
+@register
+class ConvertF2IInstructionDesc(MaskedInstructionDesc):
+	documentation_begin_group = 'Conversion Instructions'
+	documentation_name = 'Convert Float to Integer'
+	mode = {
+		0: 'f_to_u32',
+		1: 'f_to_s8',
+		2: 'f_to_u8',
+		3: 'f_to_s16',
+		4: 'f_to_u16',
+		5: 'f_to_s32',
+		6: 'f_to_u8_6',  # Unobserved (Apple compiler uses 2)
+		7: 'f_to_s16_7', # Unobserved (Apple compiler uses 3)
+	}
+	names = set(mode.values())
+	def __init__(self):
+		super().__init__('convert', size=10)
+		self.add_constant(0, 12, 0x727)
+		self.add_operand(EnumDesc('mode', 62, 3, self.mode))
+		self.add_operand(FixedDstDesc('D', s_off=50, r_off=33))
+		# Note: Apple compiler does not generate bfloat, abs, or neg, but all seem to be there in hw testing
+		self.add_operand(FixedFloatSrcDesc('A', 41, i_off=51, s_off=52, d_off=53, r_off=59, a_off=60, n_off=61))
+		self.add_operand(WaitDesc('W', lo=12, hi=15))
+		self.add_unsure_constant(65, 1, 1)
+		self.add_unsure_constant(55, 1, 1)
+		self.add_unsure_constant(18, 5, 0b10101)
+
+	def fields_for_mnem(self, mnem, operand_strings):
+		if self.name == mnem and operand_strings[0] in self.names:
+			return {}
+
+class ConvertI2FEnumDesc(OperandDesc):
+	documentation_extra_arguments = ['As']
+	mode_16 = {
+		0: 'u16_to_f',
+		1: 'u8_to_f',
+		2: 's16_to_f',
+		3: 's8_to_f',
+	}
+	mode_32 = {
+		0: 'u32_to_f',
+		1: 'u32_to_f_1', # Unobserved (Apple compiler uses 0)
+		2: 's32_to_f',
+		3: 's32_to_f_1', # Unobserved (Apple compiler uses 2)
+	}
+	names_16 = { v: k for k, v in mode_16.items() }
+	names_32 = { v: k for k, v in mode_32.items()  }
+	def __init__(self, name, fields):
+		super().__init__(name)
+		self.add_merged_field(self.name, fields)
+
+	def decode(self, fields):
+		if fields['As']:
+			return self.mode_32[fields[self.name]]
+		else:
+			return self.mode_16[fields[self.name]]
+
+	def encode(self, fields, value, count):
+		fields[self.name] = value
+
+	def encode_string(self, fields, opstr):
+		if opstr in self.names_16:
+			fields[self.name] = self.names_16[opstr]
+		elif opstr in self.names_32:
+			fields[self.name] = self.names_32[opstr]
+		else:
+			raise Exception(f'invalid integer to float mode {opstr}')
+
+@register
+class ConvertI2FInstructionDesc(MaskedInstructionDesc):
+	documentation_name = 'Convert Integer to Float'
+	def __init__(self):
+		super().__init__('convert', size=8)
+		self.add_constant(0, 12, 0x7A7)
+		self.add_operand(ConvertI2FEnumDesc('mode', [
+			(52, 1, 'ml'),
+			# Based on placement and action, mh is probably treated as an sx bit internally
+			# But it's easier for disassembly to call it part of the mode enum
+			(62, 1, 'mh'),
+		]))
+		self.add_operand(FixedDstDesc('D', s_off=50, r_off=33))
+		self.add_operand(FixedSrcDesc('A', 41, s_off=51, d_off=53, r_off=61))
+		self.add_operand(EnumDesc('rnd', 60, 1, {
+			0: 'rte',
+			1: 'rtz',
+		}))
+		self.add_operand(WaitDesc('W', lo=12, hi=15))
+		self.add_unsure_constant(55, 1, 1)
+		self.add_unsure_constant(18, 5, 0b10101)
 
 class UnormPackingEnumDesc(OperandDesc):
 	types_rg = {
