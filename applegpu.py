@@ -1952,37 +1952,33 @@ class NewShiftDesc(OperandDesc):
 			return 'lsl 0'
 
 class MaskDesc(OperandDesc):
-	documentation_no_name = True
+	documentation_skip = True
 
-	def __init__(self, name):
+	def __init__(self, name, pos):
 		super().__init__(name)
-		self.add_merged_field(self.name, [
-			(38, 2, self.name + '1'),
-			(50, 2, self.name + '2'),
-			(63, 1, self.name + '3'),
-		])
+		self.add_field(pos, 5, self.name)
 
 	def decode(self, fields):
 		mask = fields[self.name]
 		return 'mask 0x%X' % ((1 << mask) - 1) if mask else ''
 
 	def encode_string(self, fields, opstr):
-		if opstr == '':
-			fields[self.name] = 0
-			return
-
-		if opstr.startswith('mask '):
-			mask = try_parse_integer(opstr[len('mask '):])
-			b = format(mask + 1, 'b')
-			if b.count('1') == 1:
-				m = len(b) - 1
-				if 0 < m <= 32:
-					if m == 32:
-						m = 0
-					fields[self.name] = m
-					return
+		assert(opstr.startswith('mask '))
+		mask = try_parse_integer(opstr[len('mask '):])
+		b = format(mask + 1, 'b')
+		if b.count('1') == 1:
+			m = len(b) - 1
+			if 0 < m <= 32:
+				if m == 32:
+					m = 0
+				fields[self.name] = m
+				return
 
 		raise Exception('invalid MaskDesc %r' % (opstr,))
+
+	def encode_insert_optional_default(self, opstr):
+		if not opstr.startswith('mask '):
+			return 'mask 0xffffffff'
 
 
 class BranchOffsetDesc(FieldDesc):
@@ -3434,6 +3430,39 @@ class BitOpInstructionDesc(InstructionGroup):
 		if 'op' in fields and fields['op'] in BITOPMOV_OPS:
 			return self.members[0].encode_fields(fields)
 		return super().encode_fields(fields)
+
+@register
+class BFIInstructionDescBase(MaskedInstructionDesc):
+	documentation_begin_group = 'Shift/Bitfield Instructions'
+	documentation_name = 'Bitfield Insert/Shift Left'
+	def __init__(self):
+		super().__init__('bfi', size=12)
+		self.add_constant(0, 12, 0x027)
+		self.add_operand(FixedDstDesc('D', s_off=68, r_off=33))
+		# Apple compiler always sets this to zero, and if a C is needed, masks and adds it on in a separate instruction
+		# The hardware seems to handle it just fine though...
+		# Note: Fields are out of order so that the first field is the same as the first field in a GLSL/M1 BFI
+		self.add_operand(FixedSrcDesc('A', 59, s_off=71, d_off=74, r_off=83))
+		self.add_operand(FixedSrcDesc('B', 41, s_off=69, d_off=72, r_off=80, sx_off=81))
+		self.add_operand(FixedSrcDesc('C', 50, s_off=70, d_off=73, r_off=82))
+		self.add_operand(MaskDesc('mask', 84))
+		self.add_operand(WaitDesc('W', lo=12, hi=15))
+		self.add_unsure_constant(71, 1, 1)
+		self.add_unsure_constant(76, 1, 1)
+		self.add_unsure_constant(18, 5, 0b10101)
+
+@register
+class ASRInstructionDescBase(MaskedInstructionDesc):
+	documentation_name = 'Arithmetic Shift Right'
+	def __init__(self):
+		super().__init__('asr', size=10)
+		self.add_constant(0, 12, 0x1A7)
+		self.add_operand(FixedDstDesc('D', s_off=59, r_off=33))
+		self.add_operand(FixedSrcDesc('A', 41, s_off=60, d_off=62, r_off=69, sx_off=70))
+		self.add_operand(FixedSrcDesc('B', 50, s_off=61, d_off=63, r_off=71))
+		self.add_operand(WaitDesc('W', lo=12, hi=15))
+		self.add_unsure_constant(65, 1, 1)
+		self.add_unsure_constant(18, 5, 0b10101)
 
 class IAddInstructionDescBase(MaskedInstructionDesc):
 
