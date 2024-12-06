@@ -50,6 +50,8 @@ instruction_lengths = {
 	0x9f01: 10, # iadd
 	0x9704: 10, # pack unorm/snorm
 	0x1f01: 10, # isub
+	0x2703: 10, # ???
+	0x2704: 10, # ???
 	0xa701: 10, # asr
 	0xa703: 10, # asrh
 	0xaf00: 10, # rcp
@@ -66,10 +68,11 @@ instruction_lengths = {
 	0x1707: 10, # simd_ballot
 	0x2700: 12, # bfi
 	0x2701: 12, # extr
-	0x2702: 12, # ???
+	0x2702: 12, # shlhi
 	0x9f00: 12, # imadd
 	0x1f00: 12, # imsub
 	0xa700: 12, # bfeil
+	0xa702: 12, # shrhi
 	0x9703: 12, # quad_ballot?
 	0x9707: 12, # simd_ballot?
 	0x6f00: 12, # ???

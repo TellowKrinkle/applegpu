@@ -3431,38 +3431,212 @@ class BitOpInstructionDesc(InstructionGroup):
 			return self.members[0].encode_fields(fields)
 		return super().encode_fields(fields)
 
-@register
-class BFIInstructionDescBase(MaskedInstructionDesc):
-	documentation_begin_group = 'Shift/Bitfield Instructions'
-	documentation_name = 'Bitfield Insert/Shift Left'
-	def __init__(self):
-		super().__init__('bfi', size=12)
-		self.add_constant(0, 12, 0x027)
-		self.add_operand(FixedDstDesc('D', s_off=68, r_off=33))
-		# Apple compiler always sets this to zero, and if a C is needed, masks and adds it on in a separate instruction
-		# The hardware seems to handle it just fine though...
-		# Note: Fields are out of order so that the first field is the same as the first field in a GLSL/M1 BFI
-		self.add_operand(FixedSrcDesc('A', 59, s_off=71, d_off=74, r_off=83))
-		self.add_operand(FixedSrcDesc('B', 41, s_off=69, d_off=72, r_off=80, sx_off=81))
-		self.add_operand(FixedSrcDesc('C', 50, s_off=70, d_off=73, r_off=82))
-		self.add_operand(MaskDesc('mask', 84))
-		self.add_operand(WaitDesc('W', lo=12, hi=15))
-		self.add_unsure_constant(71, 1, 1)
-		self.add_unsure_constant(76, 1, 1)
-		self.add_unsure_constant(18, 5, 0b10101)
-
-@register
-class ASRInstructionDescBase(MaskedInstructionDesc):
+class BaseShiftInstructionDesc(MaskedInstructionDesc):
 	documentation_name = 'Arithmetic Shift Right'
-	def __init__(self):
-		super().__init__('asr', size=10)
-		self.add_constant(0, 12, 0x1A7)
+	def __init__(self, name, opcode):
+		super().__init__(name, size=10)
+		self.add_constant(0, 12, opcode)
 		self.add_operand(FixedDstDesc('D', s_off=59, r_off=33))
 		self.add_operand(FixedSrcDesc('A', 41, s_off=60, d_off=62, r_off=69, sx_off=70))
 		self.add_operand(FixedSrcDesc('B', 50, s_off=61, d_off=63, r_off=71))
 		self.add_operand(WaitDesc('W', lo=12, hi=15))
 		self.add_unsure_constant(65, 1, 1)
 		self.add_unsure_constant(18, 5, 0b10101)
+
+	pseudocode_template = '''
+	for each active thread:
+		a = A[thread]
+		b = B[thread]
+
+		shift_amount = (b & 0x7F)
+
+		{expr}
+
+		D[thread] = result
+	'''
+
+	def exec_thread(self, instr, corestate, thread):
+		fields = dict(self.decode_fields(instr))
+
+		a = self.operands['A'].evaluate_thread(fields, corestate, thread)
+		b = self.operands['B'].evaluate_thread(fields, corestate, thread)
+
+		a_size = self.operands['A'].get_bit_size(fields)
+
+		shift_amount = (b & 0x7F)
+
+		result = self.shift_operation(a, a_size, shift_amount)
+
+		self.operands['D'].set_thread(fields, corestate, thread, result)
+
+class BaseBitfieldInstructionDesc(MaskedInstructionDesc):
+	def __init__(self, name, opcode):
+		super().__init__(name, size=12)
+		self.add_constant(0, 12, opcode)
+		self.add_operand(FixedDstDesc('D', s_off=68, r_off=33))
+		# Note: M3 puts what was the first field in M1 (e.g. bfi/bfeil target, extr low register) last.
+		#       To keep a more reasonable operand order, we reorder the fields here to undo that.
+		self.add_operand(FixedSrcDesc('A', 59, s_off=71, d_off=74, r_off=83))
+		self.add_operand(FixedSrcDesc('B', 41, s_off=69, d_off=72, r_off=80, sx_off=81))
+		self.add_operand(FixedSrcDesc('C', 50, s_off=70, d_off=73, r_off=82))
+		self.add_operand(MaskDesc('mask', 84))
+		self.add_operand(WaitDesc('W', lo=12, hi=15))
+		self.add_unsure_constant(76, 1, 1)
+		self.add_unsure_constant(18, 5, 0b10101)
+
+	pseudocode_template = '''
+	# Note: Operand bit locations aren't in the usual order
+	for each active thread:
+		a = A[thread]
+		b = B[thread]
+		c = C[thread]
+
+		shift_amount = (c & 0x7F)
+
+		if m == 0:
+			mask = 0xFFFFFFFF
+		else:
+			mask = (1 << m) - 1
+
+		{expr}
+
+		D[thread] = result
+	'''
+
+	def exec_thread(self, instr, corestate, thread):
+		fields = dict(self.decode_fields(instr))
+
+		a = self.operands['A'].evaluate_thread(fields, corestate, thread)
+		b = self.operands['B'].evaluate_thread(fields, corestate, thread)
+		c = self.operands['C'].evaluate_thread(fields, corestate, thread)
+		m = fields['m']
+
+		shift_amount = (c & 0x7F)
+
+		mask = (1 << m) - 1 if m else 0xFFFFFFFF
+
+		result = self.bitfield_operation(a, b, shift_amount, mask)
+
+		self.operands['D'].set_thread(fields, corestate, thread, result)
+
+@register
+class BitfieldInsertInstructionDesc(BaseBitfieldInstructionDesc):
+	documentation_begin_group = 'Shift/Bitfield Instructions'
+	documentation_name = 'Bitfield Insert/Shift Left'
+
+	def __init__(self):
+		super().__init__('bfi', 0x027)
+
+	# Note: Apple compiler always sets A to zero, and if an A is needed, masks and adds it on in a separate instruction.
+	# The hardware seems to handle it just fine though...
+	pseudocode = BaseBitfieldInstructionDesc.pseudocode_template.format(
+		expr='result = (a & ~(mask << shift_amount)) | ((b & mask) << shift_amount)'
+	)
+
+	def bitfield_operation(self, a, b, shift_amount, mask):
+		# TODO:
+		# possible alias: shl (shift left) if m is 0 and a is 0
+		return (a & ~(mask << shift_amount)) | ((b & mask) << shift_amount)
+
+@register
+class BitfieldExtractInstructionDesc(BaseBitfieldInstructionDesc):
+	documentation_name = 'Bitfield Extract and Insert Low/Shift Right'
+
+	def __init__(self):
+		super().__init__('bfeil', 0x0A7)
+
+	pseudocode = BaseBitfieldInstructionDesc.pseudocode_template.format(
+		expr='result = (a & ~mask) | ((b >> shift_amount) & mask)'
+	)
+
+	def bitfield_operation(self, a, b, shift_amount, mask):
+		# TODO:
+		# possible alias: bfe (bit field extract) if a = 0
+		# possible alias: shr if a = 0 and m = 0
+		return (a & ~mask) | ((b >> shift_amount) & mask)
+
+@register
+class ExtractInstructionDesc(BaseBitfieldInstructionDesc):
+	documentation_name = 'Extract from Register Pair'
+
+	def __init__(self):
+		super().__init__('extr', 0x127)
+
+	pseudocode = BaseBitfieldInstructionDesc.pseudocode_template.format(
+		expr='result = (b:a >> shift_amount) & mask'
+	)
+
+	def bitfield_operation(self, a, b, shift_amount, mask):
+		# TODO:
+		# possible alias: ror (rotate right) if a = b and m = 0
+		# possible alias: shr64 (64-bit shift right) if m = 0
+		return (((b << 32) | a) >> shift_amount) & mask
+
+@register
+class ShlhiInstructionDesc(BaseBitfieldInstructionDesc):
+	documentation_name = 'Shift Left High and Insert'
+
+	def __init__(self):
+		super().__init__('shlhi', 0x227)
+
+	pseudocode = BaseBitfieldInstructionDesc.pseudocode_template.format(
+		expr='''
+		shifted_mask = mask << max(shift_amount-32, 0)
+		result = (((b << shift_amount) >> 32) & shifted_mask) | (a & ~shifted_mask)
+		'''.strip()
+	)
+
+	def bitfield_operation(self, a, b, shift_amount, mask):
+		# shlhi (shift left high, insert)
+		shifted_mask = mask << max(shift_amount-32, 0)
+		return (((b << shift_amount) >> 32) & shifted_mask) | (a & ~shifted_mask)
+
+@register
+class ShrhiInstructionDesc(BaseBitfieldInstructionDesc):
+	documentation_name = 'Shift Right High and Insert'
+
+	def __init__(self):
+		super().__init__('shrhi', 0x2A7)
+
+	pseudocode = BaseBitfieldInstructionDesc.pseudocode_template.format(
+		expr='''
+		shifted_mask = (mask << 32) >> min(shift_amount, 32)
+		result = (((b << 32) >> shift_amount) & shifted_mask) | (a & ~shifted_mask)
+		'''.strip()
+	)
+
+	def bitfield_operation(self, a, b, shift_amount, mask):
+		# shlhi (shift left high, insert)
+		shifted_mask = (mask << 32) >> min(shift_amount, 32)
+		return (((b << 32) >> shift_amount) & shifted_mask) | (a & ~shifted_mask)
+
+@register
+class ArithmeticShiftRightInstructionDesc(BaseShiftInstructionDesc):
+	documentation_name = 'Arithmetic Shift Right'
+
+	def __init__(self):
+		super().__init__('asr', 0x1A7)
+
+	pseudocode = BaseShiftInstructionDesc.pseudocode_template.format(
+		expr='result = sign_extend(a, A.thread_bit_size) >> shift_amount'
+	)
+
+	def shift_operation(self, a, a_size, shift_amount):
+		return sign_extend(a, a_size) >> shift_amount
+
+@register
+class ArithmeticShiftRightHighInstructionDesc(BaseShiftInstructionDesc):
+	documentation_name = 'Arithmetic Shift Right High'
+
+	def __init__(self):
+		super().__init__('asrh', 0x3A7)
+
+	pseudocode = BaseShiftInstructionDesc.pseudocode_template.format(
+		expr='result = (sign_extend(a, A.thread_bit_size) << 32) >> shift_amount'
+	)
+
+	def shift_operation(self, a, a_size, shift_amount):
+		return (sign_extend(a, a_size) << 32) >> shift_amount
 
 class IAddInstructionDescBase(MaskedInstructionDesc):
 
