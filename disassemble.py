@@ -6,84 +6,84 @@ VERBOSE = False
 STOP_ON_STOP = True
 
 instruction_lengths = {
-	0x0f04:  4, # else
-	0x0f05:  4, # if
-	0x0704:  6, # barrier
-	0x5701:  6, # jmp_exec_none
-	0x0f06:  6, # pop_exec
-	0x1704:  8, # unpack unorm/snorm
-	0x2705:  8, # popcount
-	0x2706:  8, # unpack rgb10a2 rg11b10f rgb9e5
-	0xa707:  8, # convert
-	0xa704:  8, # bitrev
-	0xa705:  8, # ffs
-	0x5706:  8, # store vertex output
-	0x3700:  8, # quad_and
-	0x3701:  8, # quad_xor
-	0x3702:  8, # quad_smin
-	0x3703:  8, # quad_umin
-	0x3706:  8, # quad_fadd
-	0xb700:  8, # quad_or
-	0xb701:  8, # quad_iadd
-	0xb702:  8, # quad_smax
-	0xb703:  8, # quad_umax
-	0xb706:  8, # quad_fmul
-	0xb705:  8, # quad_fmin
-	0xb707:  8, # quad_fmax
-	0x3f00:  8, # simd_and
-	0x3f01:  8, # simd_xor
-	0x3f02:  8, # simd_smin
-	0x3f03:  8, # simd_umin
-	0x3f06:  8, # simd_fadd
-	0xbf00:  8, # simd_or
-	0xbf01:  8, # simd_iadd
-	0xbf02:  8, # simd_smax
-	0xbf03:  8, # simd_umax
-	0xbf06:  8, # simd_fmul
-	0xbf05:  8, # simd_fmin
-	0xbf07:  8, # simd_fmax
-	0x0f01: 10, # jmp_exec_none?
-	0x2707: 10, # unknown, appears in round implementation
-	0x2f00: 10, # floor/ceil/trunc/rint
-	0x2f02: 10, # log2
-	0x2f03: 10, # sin_pt_1???
-	0x9f01: 10, # iadd
-	0x9704: 10, # pack unorm/snorm
-	0x1f01: 10, # isub
-	0x2703: 10, # ???
-	0x2704: 10, # ???
-	0xa701: 10, # asr
-	0xa703: 10, # asrh
-	0xaf00: 10, # rcp
-	0xaf02: 10, # exp2
-	0x4700: 10, # quad_shuffle
-	0x4701: 10, # quad_shuffle_up
-	0xc701: 10, # quad_shuffle_down
-	0xc700: 10, # quad_shuffle_xor
-	0x4704: 10, # simd_shuffle
-	0x4705: 10, # simd_shuffle_up
-	0xc705: 10, # simd_shuffle_down
-	0xc704: 10, # simd_shuffle_xor
-	0x1702: 10, # quad_ballot
-	0x1707: 10, # simd_ballot
-	0x2700: 12, # bfi
-	0x2701: 12, # extr
-	0x2702: 12, # shlhi
-	0x9f00: 12, # imadd
-	0x1f00: 12, # imsub
-	0xa700: 12, # bfeil
-	0xa702: 12, # shrhi
-	0x9703: 12, # quad_ballot?
-	0x9707: 12, # simd_ballot?
-	0x6f00: 12, # ???
-	0x1705: 12, # ???
-	0x8f04: 14, # while + jmp_exec_any?
-	0x6700: 14, # device_load
-	0x6702: 14, # threadgroup_load
-	0xa706: 14, # pack rgb10a2 rg11b10f rgb9e5
-	0xe700: 14, # device_store
-	0xe702: 14, # theadgroup_store
-	0xd700: 16, # image_store
+	0x40f:  4, # else
+	0x50f:  4, # if
+	0x407:  6, # barrier
+	0x157:  6, # jmp_exec_none
+	0x60f:  6, # pop_exec
+	0x417:  8, # unpack unorm/snorm
+	0x527:  8, # popcount
+	0x627:  8, # unpack rgb10a2 rg11b10f rgb9e5
+	0x7a7:  8, # convert
+	0x4a7:  8, # bitrev
+	0x5a7:  8, # ffs
+	0x657:  8, # store vertex output
+	0x037:  8, # quad_and
+	0x137:  8, # quad_xor
+	0x237:  8, # quad_smin
+	0x337:  8, # quad_umin
+	0x637:  8, # quad_fadd
+	0x0b7:  8, # quad_or
+	0x1b7:  8, # quad_iadd
+	0x2b7:  8, # quad_smax
+	0x3b7:  8, # quad_umax
+	0x6b7:  8, # quad_fmul
+	0x5b7:  8, # quad_fmin
+	0x7b7:  8, # quad_fmax
+	0x03f:  8, # simd_and
+	0x13f:  8, # simd_xor
+	0x23f:  8, # simd_smin
+	0x33f:  8, # simd_umin
+	0x63f:  8, # simd_fadd
+	0x0bf:  8, # simd_or
+	0x1bf:  8, # simd_iadd
+	0x2bf:  8, # simd_smax
+	0x3bf:  8, # simd_umax
+	0x6bf:  8, # simd_fmul
+	0x5bf:  8, # simd_fmin
+	0x7bf:  8, # simd_fmax
+	0x10f: 10, # jmp_exec_none?
+	0x727: 10, # unknown, appears in round implementation
+	0x02f: 10, # floor/ceil/trunc/rint
+	0x22f: 10, # log2
+	0x32f: 10, # sin_pt_1???
+	0x19f: 10, # iadd
+	0x497: 10, # pack unorm/snorm
+	0x11f: 10, # isub
+	0x327: 10, # ???
+	0x427: 10, # ???
+	0x1a7: 10, # asr
+	0x3a7: 10, # asrh
+	0x0af: 10, # rcp
+	0x2af: 10, # exp2
+	0x047: 10, # quad_shuffle
+	0x147: 10, # quad_shuffle_up
+	0x1c7: 10, # quad_shuffle_down
+	0x0c7: 10, # quad_shuffle_xor
+	0x447: 10, # simd_shuffle
+	0x547: 10, # simd_shuffle_up
+	0x5c7: 10, # simd_shuffle_down
+	0x4c7: 10, # simd_shuffle_xor
+	0x217: 10, # quad_ballot
+	0x717: 10, # simd_ballot
+	0x027: 12, # bfi
+	0x127: 12, # extr
+	0x227: 12, # shlhi
+	0x09f: 12, # imadd
+	0x01f: 12, # imsub
+	0x0a7: 12, # bfeil
+	0x2a7: 12, # shrhi
+	0x397: 12, # quad_ballot?
+	0x797: 12, # simd_ballot?
+	0x06f: 12, # ???
+	0x517: 12, # ???
+	0x48f: 14, # while + jmp_exec_any?
+	0x067: 14, # device_load
+	0x267: 14, # threadgroup_load
+	0x6a7: 14, # pack rgb10a2 rg11b10f rgb9e5
+	0x0e7: 14, # device_store
+	0x2e7: 14, # theadgroup_store
+	0x0d7: 16, # image_store
 }
 
 def instruction_length(code, offset):
@@ -128,7 +128,7 @@ def instruction_length(code, offset):
 		else:
 			size = 8 # wait
 	elif op == 7:
-		op = (code[offset] << 8) | (code[offset + 1] & 0xf)
+		op = code[offset] | ((code[offset + 1] & 0xf) << 8)
 
 	if op in instruction_lengths:
 		size = instruction_lengths[op]
