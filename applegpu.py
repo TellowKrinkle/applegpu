@@ -3431,6 +3431,34 @@ class BitOpInstructionDesc(InstructionGroup):
 			return self.members[0].encode_fields(fields)
 		return super().encode_fields(fields)
 
+class ALUUnaryOpBase(MaskedInstructionDesc):
+	def __init__(self, name, opcode):
+		super().__init__(name, size=8)
+		self.add_constant(0, 12, opcode)
+		self.add_operand(FixedDstDesc('D', s_off=50, r_off=33))
+		self.add_operand(FixedSrcDesc('A', 41, s_off=51, d_off=52, r_off=58))
+		self.add_operand(WaitDesc('W', lo=12, hi=15))
+		self.add_unsure_constant(54, 1, 1)
+		self.add_unsure_constant(18, 5, 0b10101)
+
+@register
+class BitRevInstructionDesc(ALUUnaryOpBase):
+	documentation_name = 'Reverse Bits'
+	def __init__(self):
+		super().__init__('bitrev', 0x4A7)
+
+@register
+class PopcountInstructionDesc(ALUUnaryOpBase):
+	documentation_name = 'Population Count'
+	def __init__(self):
+		super().__init__('popcount', 0x527)
+
+@register
+class FFSInstructionDesc(ALUUnaryOpBase):
+	documentation_name = 'Find First Set'
+	def __init__(self):
+		super().__init__('ffs', 0x5A7)
+
 class BaseShiftInstructionDesc(MaskedInstructionDesc):
 	documentation_name = 'Arithmetic Shift Right'
 	def __init__(self, name, opcode):
