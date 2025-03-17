@@ -1020,7 +1020,7 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 	def get_size(self, fields):
 		return fields.get(self.name + 's', 1)
 
-	def __init__(self, name, bit_off, l_off=None, c_off=None, d_off=None, common_layout=None, s_off=None, h_off=None, u_off=None, n_off=None, a_off=None, u_default=0):
+	def __init__(self, name, bit_off, l_off=None, c_off=None, d_off=None, common_layout=None, s_off=None, h_off=None, u_off=None, n_off=None, a_off=None, b_off=None, u_default=0):
 		super().__init__(name)
 		if common_layout is not None:
 			c_off = c_off or bit_off + 6
@@ -1067,6 +1067,8 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 			self.add_field(n_off, 1, self.name + 'n')
 		if a_off is not None:
 			self.add_field(a_off, 1, self.name + 'a')
+		if b_off is not None:
+			self.add_field(b_off, 1, self.name + 'b')
 
 		self.u_default = u_default
 
@@ -1081,6 +1083,7 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 
 		negate_bit = fields.get(self.name + 'n', 0)
 		abs_bit = fields.get(self.name + 'a', 0)
+		bf_bit = fields.get(self.name + 'b', 0)
 
 		if uniform_bit:
 			value |= (discard_bit << 7) | (high_bit << 8)
@@ -1112,6 +1115,8 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 			if negate_bit:
 				r.flags.append(SIGN_EXTEND_FLAG)
 		else:
+			if bf_bit:
+				r.flags.append(BFLOAT_FLAG)
 			if abs_bit:
 				r.flags.append(ABS_FLAG)
 			if negate_bit:
@@ -1131,6 +1136,7 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 		d = 0
 		n = NEGATE_FLAG in reg.flags or SIGN_EXTEND_FLAG in reg.flags
 		a = ABS_FLAG in reg.flags
+		b = BFLOAT_FLAG in reg.flags
 		value = reg.n
 		if s:
 			value <<= 1
@@ -1151,6 +1157,7 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 		fields[self.name + 'd'] = d
 		fields[self.name + 'n'] = n
 		fields[self.name + 'a'] = a
+		fields[self.name + 'b'] = b
 
 	def encode_imm(self, fields, imm):
 		fields[self.name] = imm & 0x7f
@@ -1161,6 +1168,7 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 		fields[self.name + 'h'] = 0
 		fields[self.name + 'n'] = 0
 		fields[self.name + 'a'] = 0
+		fields[self.name + 'b'] = 0
 
 	def encode_string(self, fields, opstr):
 		reg = try_parse_register(opstr)
@@ -1172,7 +1180,7 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 			raise Exception(f'invalid VariableSrcDesc {opstr}')
 
 class VariableDstDesc(AbstractDstOperandDesc):
-	def __init__(self, name, bit_off=4, l_off=None, x_off=22, h_off=None, z_off=None, s_off=3, c_off=21, u_off=None):
+	def __init__(self, name, bit_off=4, l_off=None, x_off=22, h_off=None, z_off=None, s_off=3, c_off=21, u_off=None, b_off=None):
 		super().__init__(name)
 		self.value_shift = 1 if l_off is None else 0
 		main_fields = [(bit_off, 4, self.name)]
@@ -1193,6 +1201,8 @@ class VariableDstDesc(AbstractDstOperandDesc):
 			self.add_field(u_off, 1, self.name + 'u') # is uniform
 		if z_off is not None:
 			self.add_field(z_off, 1, self.name + 'z') # high part of uniform
+		if b_off is not None:
+			self.add_field(b_off, 1, self.name + 'b') # bfloat
 
 	def decode(self, fields):
 		value = fields[self.name] << self.value_shift
@@ -1200,6 +1210,7 @@ class VariableDstDesc(AbstractDstOperandDesc):
 		uniform_bit = fields.get(self.name + 'u', 0) # is uniform
 		size_bit = fields[self.name + 's'] # is 32-bit
 		cache_bit = fields.get(self.name + 'c', 0) # TODO: What is it implicitly in MovImm7?
+		bf_bit = fields.get(self.name + 'b', 0)
 
 		high_uniform_bit = fields.get(self.name + 'z', 0)
 
@@ -1215,6 +1226,8 @@ class VariableDstDesc(AbstractDstOperandDesc):
 			else:
 				r = Reg16(value)
 
+		if bf_bit:
+			r.flags.append(BFLOAT_FLAG)
 		if cache_bit:
 			r.flags.append(CACHE_FLAG)
 
@@ -1237,6 +1250,7 @@ class VariableDstDesc(AbstractDstOperandDesc):
 		fields[self.name + 'u'] = u
 		fields[self.name + 's'] = s
 		fields[self.name + 'z'] = value >> 8
+		fields[self.name + 'b'] = BFLOAT_FLAG in reg.flags
 
 	def encode_string(self, fields, opstr):
 		reg = try_parse_register(opstr)
@@ -4010,7 +4024,7 @@ class FFMA8InstructionDesc(EncodeWmAsWHelper, FFMAInstructionDescBase):
 		self.add_operand(VariableDstDesc('D', l_off=50, h_off=60, u_off=54))
 		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A'))
 		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', n_off=59))
-		self.add_operand(NewFloatSrcDesc('C', 41, common_layout='C', s_off=49))
+		self.add_operand(NewFloatSrcDesc('C', 41, common_layout='C', s_off=49, b_off=34))
 
 		#self.add_field(61, 3, 'W') # wait
 		self.add_operand(WaitDesc('W', 61))
@@ -4023,10 +4037,10 @@ class FFMA10InstructionDesc(FFMAInstructionDescBase):
 		self.add_constant(18, 1, 0b1) # 'L'
 		self.add_constant(33, 1, 0b1)
 
-		self.add_operand(VariableDstDesc('D', l_off=50, h_off=60, z_off=66, u_off=54))
-		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', a_off=80, n_off=65))
-		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', a_off=81, n_off=59))
-		self.add_operand(NewFloatSrcDesc('C', 41, common_layout='C', s_off=49))
+		self.add_operand(VariableDstDesc('D', l_off=50, h_off=60, z_off=66, u_off=54, b_off=70))
+		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', a_off=80, b_off=71, n_off=65))
+		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', a_off=81, b_off=72, n_off=59))
+		self.add_operand(NewFloatSrcDesc('C', 41, common_layout='C', s_off=49, b_off=34))
 
 		self.add_operand(WaitDesc('W', 61, 77))
 
@@ -4042,6 +4056,7 @@ class FFMA10InstructionDesc(FFMAInstructionDescBase):
 	s -> size (is 32-bit)
 	n -> negate
 	a -> abs
+	b -> bfloat
 	d -> discard
 	c -> cache
 	L, L2 -> length modifiers
@@ -4111,9 +4126,9 @@ class FMulAdd8InstructionDescBase(FFMAInstructionDescBase):
 		self.add_constant(18, 1, 0b1) # 'L'
 		self.add_constant(32, 2, 0b01)
 
-		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38, z_off=50))
-		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', l_off=35, n_off=49))
-		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', l_off=36, n_off=43))
+		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38, z_off=50, b_off=54))
+		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', l_off=35, n_off=49, b_off=55))
+		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', l_off=36, n_off=43, b_off=56))
 
 		self.add_operand(WaitDesc('W', 45, 61))
 		self.add_field(57, 1, 'S') # saturate
@@ -4126,9 +4141,9 @@ class FMulAdd10InstructionDescBase(FFMAInstructionDescBase):
 		self.add_constant(18, 1, 0b1) # 'L'
 		self.add_constant(32, 2, 0b10)
 
-		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38, z_off=50))
-		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', l_off=35, n_off=49, a_off=64))
-		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', l_off=36, n_off=43, a_off=65))
+		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38, z_off=50, b_off=54))
+		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', l_off=35, n_off=49, b_off=55, a_off=64))
+		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', l_off=36, n_off=43, b_off=56, a_off=65))
 
 		self.add_operand(WaitDesc('W', 45, 61))
 		self.add_field(57, 1, 'S') # saturate
@@ -4547,8 +4562,8 @@ class CmpSel14InstructionDesc(CmpSelInstructionBase):
 			(34, 1, 'ccx'),
 		], None, CMPSEL_CC))
 		self.add_operand(VariableDstDesc('D', l_off=3, s_off=17, u_off=54, h_off=60, z_off=82))
-		self.add_operand(CmpSrcDesc('A',  9, common_layout='A', a_off=96, n_off=65))
-		self.add_operand(CmpSrcDesc('B', 25, common_layout='B', a_off=97, n_off=59))
+		self.add_operand(CmpSrcDesc('A',  9, common_layout='A', a_off=96, b_off=87, n_off=65))
+		self.add_operand(CmpSrcDesc('B', 25, common_layout='B', a_off=97, b_off=88, n_off=59))
 		self.add_operand(SelSrcDesc('X', 41, common_layout='X'))
 		self.add_operand(SelSrcDesc('Y', 73, common_layout='Y'))
 		self.add_operand(WaitDesc('W', 61, 93))
