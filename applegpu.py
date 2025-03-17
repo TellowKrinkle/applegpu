@@ -4062,6 +4062,161 @@ class FFMAInstructionDesc(InstructionGroup):
 			FFMA10InstructionDesc(),
 		])
 
+class FMulAdd4InstructionDescBase(FFMAInstructionDescBase):
+	def __init__(self, name, op):
+		super().__init__(name, size=4)
+		self.add_constant(0, 3, 0b001)
+
+		self.add_operand(VariableDstDesc('D',  4))
+		self.add_operand(NewFloatSrcDesc('A',  9, s_off= 8, c_off=15, d_off=19))
+		self.add_operand(NewFloatSrcDesc('B', 25, s_off=24, c_off=31, d_off=20))
+
+		self.add_constant(16, 2, op)
+		self.add_constant(18, 1, 0b0)
+
+	def can_encode_fields(self, fields):
+		if (fields['A'] & 1) or (fields['B'] & 1) or (fields['D'] & 1):
+			return False
+		return super().can_encode_fields(fields)
+
+	def encode_fields(self, fields):
+		# This was encoded by FMulAdd10, so we need to shift the register numbers since we have no l bits
+		fields['A'] >>= 1
+		fields['B'] >>= 1
+		fields['D'] >>= 1
+		return super().encode_fields(fields)
+
+class FMulAdd6InstructionDescBase(EncodeWmAsWHelper, FFMAInstructionDescBase):
+	def __init__(self, name, op):
+		super().__init__(name, size=6)
+		self.add_constant(0, 3, 0b001)
+
+		self.add_constant(16, 2, op)
+
+		self.add_constant(18, 1, 0b1) # 'L'
+		self.add_constant(32, 2, 0b00)
+
+		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38))
+		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', l_off=35))
+		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', l_off=36, n_off=43))
+
+		self.add_operand(WaitDesc('W', 45))
+
+class FMulAdd8InstructionDescBase(FFMAInstructionDescBase):
+	def __init__(self, name, op):
+		super().__init__(name, size=8)
+		self.add_constant(0, 3, 0b001)
+		self.add_constant(16, 2, op)
+
+		self.add_constant(18, 1, 0b1) # 'L'
+		self.add_constant(32, 2, 0b01)
+
+		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38, z_off=50))
+		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', l_off=35, n_off=49))
+		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', l_off=36, n_off=43))
+
+		self.add_operand(WaitDesc('W', 45, 61))
+		self.add_field(57, 1, 'S') # saturate
+
+class FMulAdd10InstructionDescBase(FFMAInstructionDescBase):
+	def __init__(self, name, op, size):
+		super().__init__(name, size=size)
+		self.add_constant(0, 3, 0b001)
+		self.add_constant(16, 2, op)
+		self.add_constant(18, 1, 0b1) # 'L'
+		self.add_constant(32, 2, 0b10)
+
+		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38, z_off=50))
+		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', l_off=35, n_off=49, a_off=64))
+		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', l_off=36, n_off=43, a_off=65))
+
+		self.add_operand(WaitDesc('W', 45, 61))
+		self.add_field(57, 1, 'S') # saturate
+
+class FMul4InstructionDesc(FMulAdd4InstructionDescBase):
+	def __init__(self):
+		super().__init__('fmul', 1)
+
+	pseudocode = '''
+	D = A * B
+	'''
+
+class FMul6InstructionDesc(FMulAdd6InstructionDescBase):
+	def __init__(self):
+		super().__init__('fmul', 1)
+
+	pseudocode = '''
+	D = A * B
+	'''
+
+class FMul8InstructionDesc(FMulAdd8InstructionDescBase):
+	def __init__(self):
+		super().__init__('fmul', 1)
+
+	pseudocode = '''
+	D = A * B
+	'''
+
+class FMul12InstructionDesc(FMulAdd10InstructionDescBase):
+	def __init__(self):
+		super().__init__('fmul', 1, size=12)
+
+	pseudocode = '''
+	D = A * B
+	'''
+
+@register
+class FMulInstructionDesc(InstructionGroup):
+	def __init__(self):
+		super().__init__('fmul', [
+			FMul4InstructionDesc(),
+			FMul6InstructionDesc(),
+			FMul8InstructionDesc(),
+			FMul12InstructionDesc(),
+		])
+
+class FAdd4InstructionDesc(FMulAdd4InstructionDescBase):
+	def __init__(self):
+		super().__init__('fadd', 0)
+
+	pseudocode = '''
+	D = A + B
+	'''
+
+class FAdd6InstructionDesc(FMulAdd6InstructionDescBase):
+	def __init__(self):
+		super().__init__('fadd', 0)
+
+	pseudocode = '''
+	D = A + B
+	'''
+
+class FAdd8InstructionDesc(FMulAdd8InstructionDescBase):
+	def __init__(self):
+		super().__init__('fadd', 0)
+
+	pseudocode = '''
+	D = A + B
+	'''
+
+class FAdd10InstructionDesc(FMulAdd10InstructionDescBase):
+	def __init__(self):
+		super().__init__('fadd', 0, size=10)
+
+	pseudocode = '''
+	D = A + B
+	'''
+
+@register
+class FAddInstructionDesc(InstructionGroup):
+	def __init__(self):
+		super().__init__('fadd', [
+			FAdd4InstructionDesc(),
+			FAdd6InstructionDesc(),
+			FAdd8InstructionDesc(),
+			FAdd10InstructionDesc(),
+		])
+
 class CmpSrcDesc(VariableSrcDesc):
 	documentation_extra_arguments = ['cc']
 	def is_int(self, fields):
