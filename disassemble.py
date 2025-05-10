@@ -45,6 +45,7 @@ instruction_lengths = {
 	0x10f: 10, # jmp_exec_none?
 	0x727: 10, # unknown, appears in round implementation
 	0x02f: 10, # floor/ceil/trunc/rint
+	0x12f: 10, # sqrt
 	0x22f: 10, # log2
 	0x32f: 10, # sin_pt_1???
 	0x19f: 10, # iadd
@@ -55,6 +56,7 @@ instruction_lengths = {
 	0x1a7: 10, # asr
 	0x3a7: 10, # asrh
 	0x0af: 10, # rcp
+	0x1af: 10, # rsqrt
 	0x2af: 10, # exp2
 	0x047: 10, # quad_shuffle
 	0x147: 10, # quad_shuffle_up

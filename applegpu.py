@@ -1,5 +1,6 @@
 import fma
 import os
+import textwrap
 
 from srgb import SRGB_TABLE
 
@@ -2860,7 +2861,7 @@ class DeviceStoreInstructionDesc(DeviceLoadStoreInstructionDesc):
 
 # Helper superclass for dsts in fixed-length instructions
 class FixedDstDesc(AbstractSrcOperandDesc):
-	def __init__(self, name, r_off=None, s_off=None, s_size=1):
+	def __init__(self, name, r_off=None, s_off=None, s_size=1, i_off=None):
 		super().__init__(name)
 
 		# destination bits
@@ -2880,6 +2881,8 @@ class FixedDstDesc(AbstractSrcOperandDesc):
 			self.add_implicit_field(self.name + 'r', 1)
 		if s_off is not None:
 			self.add_field(s_off, s_size, self.name + 's') # size: 0 = 16-bit, 1 = 32-bit, 2 = 64-bit
+		if i_off is not None:
+			self.add_field(i_off, 1, self.name + 'i')
 
 	def has_l(self):
 		return True
@@ -2893,12 +2896,16 @@ class FixedDstDesc(AbstractSrcOperandDesc):
 	def get_count(self, fields):
 		return 1
 
+	def is_float(self):
+		return False
+
 	def decode(self, fields):
 		value = fields[self.name] << self.value_shift()
 		uniform_bit = not fields.get(self.name + 'r', 1) # is register
 		reg_size = self.get_size(fields)
 		reg_count = self.get_count(fields)
 		cache_bit = fields[self.name + 'c']
+		i_bit = fields.get(self.name + 'i', 0)
 
 		if reg_size == 0 and reg_count > 1:
 			value &= ~1 # All known uses of register tuples in ALU instructions still require 32-bit alignment
@@ -2908,6 +2915,10 @@ class FixedDstDesc(AbstractSrcOperandDesc):
 			r = register_from_fields(value, size_bits=reg_size, uniform=uniform_bit, count=reg_count)
 		else:
 			r = register_from_fields(value, size_bits=reg_size, uniform=uniform_bit, count=reg_count, cache=cache_bit)
+
+		if self.is_float():
+			if reg_size == 0 and not i_bit:
+				r.flags.append(BFLOAT_FLAG)
 
 		return r
 
@@ -2934,6 +2945,8 @@ class FixedDstDesc(AbstractSrcOperandDesc):
 		fields[self.name + 'c'] = CACHE_FLAG in reg.flags
 		fields[self.name + 'r'] = r
 		fields[self.name + 's'] = s
+		if self.is_float():
+			fields[self.name + 'i'] = BFLOAT_FLAG not in reg.flags and s == 0
 
 	def encode_string(self, fields, opstr):
 		reg = try_parse_register(opstr)
@@ -4231,6 +4244,132 @@ class FAddInstructionDesc(InstructionGroup):
 			FAdd8InstructionDesc(),
 			FAdd10InstructionDesc(),
 		])
+
+class FUnaryDstDesc(FixedDstDesc):
+	def is_float(self):
+		return True
+	def get_size(self, fields):
+		# It's backwards for some reason
+		return 0 if fields[self.name + 's'] else 1
+	def encode_reg(self, fields, reg):
+		super().encode_reg(fields, reg)
+		fields[self.name + 's'] = 0 if fields[self.name + 's'] else 1
+
+class FUnaryInstructionDesc(MaskedInstructionDesc):
+	def __init__(self, name, op):
+		super().__init__(name, size=10)
+		self.add_constant(0, 12, op)
+		self.add_operand(FUnaryDstDesc('D', s_off=61, r_off=33, i_off=50))
+		self.add_operand(FixedFloatSrcDesc('A', 41, i_off=51, s_off=52, d_off=53, r_off=62, a_off=63, n_off=64))
+		self.add_operand(WaitDesc('W', lo=12, hi=15))
+		self.add_unsure_constant(55, 1, 1)
+		self.add_unsure_constant(18, 5, 0b10101)
+
+		self.pseudocode = f'''
+		D = {self.name}(A)
+		# Note: Unlike other s fields, Ds is 1 for 16-bit, 0 for 32-bit
+		'''
+
+@register
+class RintInstructionDesc(FUnaryInstructionDesc):
+	def __init__(self):
+		super().__init__('rint', 0x02F)
+		self.add_constant(65, 2, 0)
+
+@register
+class FloorInstructionDesc(FUnaryInstructionDesc):
+	def __init__(self):
+		super().__init__('floor', 0x02F)
+		self.add_constant(65, 2, 1)
+
+@register
+class CeilInstructionDesc(FUnaryInstructionDesc):
+	def __init__(self):
+		super().__init__('ceil', 0x02F)
+		self.add_constant(65, 2, 2)
+
+@register
+class TruncInstructionDesc(FUnaryInstructionDesc):
+	def __init__(self):
+		super().__init__('trunc', 0x02F)
+		self.add_constant(65, 2, 3)
+
+@register
+class ReciprocalInstructionDesc(MaskedInstructionDesc):
+	def __init__(self):
+		super().__init__('rcp', size=10)
+		self.add_constant(0, 12, 0x0AF)
+		self.add_operand(FUnaryDstDesc('D', s_off=68, r_off=33, i_off=57))
+		self.add_operand(FixedFloatSrcDesc('A', 41, i_off=58, s_off=59, d_off=52, r_off=69, a_off=70, n_off=71))
+		self.add_operand(WaitDesc('W', lo=12, hi=15))
+		self.add_unsure_constant(62, 1, 1)
+		self.add_unsure_constant(18, 5, 0b10101)
+
+	pseudocode = f'''
+	D = reciprocal(A)
+	# Note: Unlike other s fields, Ds is 1 for 16-bit, 0 for 32-bit
+	'''
+
+@register
+class RsqrtInstructionDesc(FUnaryInstructionDesc):
+	def __init__(self):
+		super().__init__('rsqrt', 0x1AF)
+
+@register
+class RsqrtSpecialInstructionDesc(FUnaryInstructionDesc):
+	documentation_html = '''
+	<p>
+	<code>rsqrt_special</code> can be used to implement fast <code>sqrt</code> as
+	<code>rsqrt_special(x) * x</code>, by handling special-cases differently.
+	</p>
+	'''
+	def __init__(self):
+		super().__init__('rsqrt_special', 0x12F)
+
+@register
+class SinHelperInstructionDesc(FUnaryInstructionDesc):
+	documentation_html = textwrap.dedent('''
+	<p>
+	On G13, sine was calculated by taking an angle around the circle in the interval [0, 4), passing that to sin_pt_1,
+	passing the result of that to sin_pt_2, and multiplying the two results to produce the final value,
+	e.g. <code>tmp = sin_pt_1(angle * 2 / pi); return sin_pt_2(tmp) * tmp</code>.
+	</p>
+	<p>
+	On G15, <code>sin_pt_1</code> is gone, and should be emulated in software.
+	<code>sin_pt_1</code> previously remapped [0, 1) to <code>x</code>, [1, 3) to <code>2 - x</code> and [3, 4) to <code>x - 4</code>,
+	so G15 codegen should do the same in software.
+	Apple's compiler uses <code>fma(x, 2/pi, 0xc00000)</code> to calculate <code>int(rint(angle * 2 / pi))</code>.
+	</p>
+	<p>
+	The full codegen from Apple's compiler for <code>fast::sin</code> is:
+	<pre>
+	ffma     t0, x, 0.63661975, float(0xc00000) ; t0 = rint(angle * 2 / pi) + 0xc00000 (which puts the integer form in the low bits for inputs <= 6588397.5)
+	fadd     t1, float(0xc00000), -t0           ; t1 = -rint(angle * 2 / pi)
+	ffma     t2, x, 0.63661975,    t1           ; t2 = angle * 2 / pi wrapped to the interval [-0.5, 0.5)
+	ffma     t3, x, 2.5682553e-08, t2           ; t3 = better approximation of t2
+	ffma     t4, x, 2.9370955e-16, t3           ; t4 = better approximation of t3 for large x
+	fadd     t5, 1.0, -|t4|
+	cmov     test, t4, t0, 1, t5                ; Adjust [pi/4, 3pi/4) and [5pi/4, 7pi/4) to 1 - |t4|
+	cmov     test, t4, t0, 2, -t4               ; Adjust [3pi/4, 7pi/4) to -t4
+	sin_pt_2 t6, t4
+	fmul     result, t4, t6
+	cmov     !fge, result, |x|, 1/4096.0, x     ; For inputs less than 1/4096, sinf(x) == x, but the above calculations may introduce rounding error
+	cmov     !flt, result, |x|, 6588397.5, 0    ; For inputs greater than 6588397.5 the above calculation will mess up, but there isn't really enough precision to get a useful result anyways
+	</pre>
+	</p>
+	''')
+	def __init__(self):
+		super().__init__('sin_pt_2', 0x32F)
+
+@register
+class Log2InstructionDesc(FUnaryInstructionDesc):
+	def __init__(self):
+		super().__init__('log2', 0x22F)
+
+@register
+class Exp2InstructionDesc(FUnaryInstructionDesc):
+	def __init__(self):
+		super().__init__('exp2', 0x2AF)
 
 class CmpSrcDesc(VariableSrcDesc):
 	documentation_extra_arguments = ['cc']
