@@ -4579,7 +4579,7 @@ class CmpSel8InstructionDesc(CmpSelInstructionBase):
 		'feq':  'fne',
 		'fge':  '!fge',
 		'fle':  '!fle',
-		'test': '!test',
+		'test': 'testz',
 		'ieq':  'ine'
 	}
 	invert_invert = { v: k for k, v in invert.items() }
@@ -4592,8 +4592,8 @@ class CmpSel8InstructionDesc(CmpSelInstructionBase):
 		cc_to_name = {}
 		for k, v in CMPSEL_CC.items():
 			# Treat the 8-byte instruction as a cmov, which means Z turns into a negation of the cc
-			cc_to_name[k] = v
-			cc_to_name[k + 0x10] = self.invert[v]
+			cc_to_name[k] = self.invert[v]
+			cc_to_name[k + 0x10] = v
 		self.add_operand(EnumDesc('cc', [
 			(48, 3, 'cc'),
 			(34, 1, 'ccx'),
@@ -4639,9 +4639,9 @@ class CmpSel8InstructionDesc(CmpSelInstructionBase):
 		fields['W'] = fields['Wm'].bit_length()
 		if self.can_alias_field(fields, 'Y'):
 			fields['Dc'] |= fields['Yc']
+			fields['cc'] |= 0x10
 		else:
 			fields['Dc'] |= fields['Xc']
-			fields['cc'] |= 0x10
 			fields['X']  = fields['Y']
 			fields['Xh'] = fields['Yh']
 			fields['Xc'] = fields['Yc']
@@ -4656,9 +4656,9 @@ class CmpSel8InstructionDesc(CmpSelInstructionBase):
 
 	pseudocode = '''
 	if Z == 0:
-		D = A cc B ? X : D
-	else:
 		D = A cc B ? D : X
+	else:
+		D = A cc B ? X : D
 	'''
 
 class CmpSel10InstructionDesc(EncodeWmAsWHelper, CmpSelInstructionBase):
