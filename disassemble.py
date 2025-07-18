@@ -77,6 +77,8 @@ instruction_lengths = {
 	0x2a7: 12, # shrhi
 	0x397: 12, # quad_ballot?
 	0x797: 12, # simd_ballot?
+	0x647: 12, # simd_shuffle_and_fill_up
+	0x6c7: 12, # simd_shuffle_and_fill_down
 	0x06f: 12, # ???
 	0x517: 12, # ???
 	0x48f: 14, # while + jmp_exec_any?

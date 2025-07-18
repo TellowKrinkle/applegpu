@@ -5169,6 +5169,250 @@ class PackFloatInstructionDesc(MaskedInstructionDesc):
 				del operands[5]
 		return operands
 
+class ShuffleSrcDesc(AbstractSrcOperandDesc):
+	def __init__(self, name, bit_off, s_off=None, c_off=None, d_off=None, r_off=None):
+		super().__init__(name)
+
+		# destination bits
+		self.add_merged_field(self.name, [
+			(bit_off, 1, self.name + 'l'),
+			(bit_off+1, 7, self.name)
+		])
+
+
+		if c_off is not None:
+			self.add_field(c_off, 1, self.name + 'c')
+		if d_off is not None:
+			self.add_field(d_off, 1, self.name + 'd')
+		if s_off is not None:
+			self.add_field(s_off, 1, self.name + 's')
+			self.has_s = True
+		else:
+			self.documentation_extra_arguments = ['As']
+			self.has_s = False
+
+	def decode(self, fields):
+		value = fields[self.name]
+		reg_size = fields[self.name + 's'] if self.has_s else fields['As']
+		d_bit = fields.get(self.name + 'd', 0)
+		c_bit = fields.get(self.name + 'c', 0)
+		return register_from_fields(value, size_bits=reg_size, uniform=False, cache=c_bit, discard=d_bit)
+
+	def encode_reg(self, fields, reg):
+		s = 1 if isinstance(reg, Reg32) else 0
+		value = reg.n
+		if s:
+			value <<= 1
+		fields[self.name] = value & 0xFF
+		fields[self.name + 'c'] = CACHE_FLAG in reg.flags
+		fields[self.name + 'd'] = DISCARD_FLAG in reg.flags
+		if self.has_s:
+			fields[self.name + 's'] = s
+
+	def encode_imm(self, fields, imm):
+		fields[self.name] = imm & 0xff
+		fields[self.name + 'c'] = 0
+		fields[self.name + 'd'] = 0
+		if self.has_s:
+			fields[self.name + 's'] = 0
+
+	def encode_string(self, fields, opstr):
+		reg = try_parse_register(opstr)
+		if isinstance(reg, Reg16) or isinstance(reg, Reg32):
+			self.encode_reg(fields, reg)
+		else:
+			raise Exception(f'invalid ShuffleSrcDesc {opstr}')
+
+ICMP_BALLOT_CC = {
+	0x1: 'ieq',
+	0x2: 'sgt',
+	0x3: 'slt',
+	0x5: 'ugt',
+	0x6: 'ult',
+	0x9: 'ine',
+	0xa: 'sle',
+	0xb: 'sge',
+	0xd: 'ule',
+	0xe: 'uge',
+}
+
+class BaseICmpBallotInstruction(MaskedInstructionDesc):
+	def __init__(self, name, op):
+		super().__init__(name, size=10)
+		self.add_constant(0, 12, op)
+		self.add_operand(EnumDesc('cc', 73, 4, ICMP_BALLOT_CC))
+		self.add_operand(FixedDstDesc('D', r_off=33, s_off=59))
+		self.add_operand(FixedSrcDesc('A', 41, s_off=60, d_off=62, r_off=69, sx_off=70))
+		self.add_operand(FixedSrcDesc('B', 50, s_off=61, d_off=63, r_off=71, sx_off=72))
+		self.add_operand(WaitDesc('W', lo=12, hi=15))
+		self.add_unsure_constant(18, 5, 0b10101)
+		self.add_unsure_constant(65, 1, 1)
+
+@register
+class ICmpBallotInstructionDesc(BaseICmpBallotInstruction):
+	documentation_begin_group = 'SIMD Group and Quad Group Instructions'
+
+	def __init__(self):
+		super().__init__('icmp_ballot', 0x717)
+
+@register
+class ICmpQuadBallotInstructionDesc(BaseICmpBallotInstruction):
+	def __init__(self):
+		super().__init__('icmp_quad_ballot', 0x217)
+
+FCMP_BALLOT_CC = {
+	0x0: 'feq',
+	0x1: 'fge',
+	0x2: 'fgt',
+	0x3: 'fle',
+	0x4: 'flt',
+	0x8: 'fne',
+	0x9: '!fge',
+	0xa: '!fgt',
+	0xb: '!fle',
+	0xc: '!flt',
+}
+
+class BaseFCmpBallotInstruction(MaskedInstructionDesc):
+	def __init__(self, name, op):
+		super().__init__(name, size=12)
+		self.add_constant(0, 12, op)
+		self.add_operand(EnumDesc('cc', 77, 4, FCMP_BALLOT_CC))
+		self.add_operand(FixedDstDesc('D', r_off=33, s_off=59))
+		self.add_operand(FixedFloatSrcDesc('A', 41, i_off=60, s_off=61, d_off=64, r_off=71, a_off=72, n_off=73))
+		self.add_operand(FixedFloatSrcDesc('B', 50, i_off=62, s_off=63, d_off=65, r_off=74, a_off=75, n_off=76))
+		self.add_operand(WaitDesc('W', lo=12, hi=15))
+		self.add_unsure_constant(18, 5, 0b10101)
+		self.add_unsure_constant(67, 1, 1)
+
+@register
+class FCmpBallotInstructionDesc(BaseFCmpBallotInstruction):
+	def __init__(self):
+		super().__init__('fcmp_ballot', 0x797)
+
+@register
+class FCmpQuadBallotInstructionDesc(BaseFCmpBallotInstruction):
+	def __init__(self):
+		super().__init__('fcmp_quad_ballot', 0x397)
+
+class ShuffleIndexSrcDesc(FixedSrcDesc):
+	def get_size(self, fields):
+		return 0
+
+class BaseSIMDShuffleInstruction(MaskedInstructionDesc):
+	def __init__(self, name, op):
+		super().__init__(name, size=10)
+		self.add_constant(0, 12, op)
+		self.add_operand(FixedDstDesc('D', r_off=33, s_off=58))
+		self.add_operand(ShuffleSrcDesc('A', 41, s_off=59, c_off=65, d_off=66))
+		self.add_operand(ShuffleIndexSrcDesc('B', 49, d_off=67, r_off=68))
+		self.add_operand(WaitDesc('W', lo=12, hi=15))
+		self.add_unsure_constant(18, 5, 0b10101)
+		self.add_unsure_constant(61, 1, 1)
+
+@register
+class SIMDShuffleInstructionDesc(BaseSIMDShuffleInstruction):
+	def __init__(self):
+		super().__init__('simd_shuffle', 0x447)
+
+@register
+class QuadShuffleInstructionDesc(BaseSIMDShuffleInstruction):
+	def __init__(self):
+		super().__init__('quad_shuffle', 0x047)
+
+@register
+class SIMDShuffleXorInstructionDesc(BaseSIMDShuffleInstruction):
+	def __init__(self):
+		super().__init__('simd_shuffle_xor', 0x4C7)
+
+@register
+class QuadShuffleXorInstructionDesc(BaseSIMDShuffleInstruction):
+	def __init__(self):
+		super().__init__('quad_shuffle_xor', 0x0C7)
+
+@register
+class SIMDShuffleUpInstructionDesc(BaseSIMDShuffleInstruction):
+	def __init__(self):
+		super().__init__('simd_shuffle_up', 0x547)
+
+@register
+class QuadShuffleUpInstructionDesc(BaseSIMDShuffleInstruction):
+	def __init__(self):
+		super().__init__('quad_shuffle_up', 0x147)
+
+@register
+class SIMDShuffleDownInstructionDesc(BaseSIMDShuffleInstruction):
+	def __init__(self):
+		super().__init__('simd_shuffle_down', 0x5C7)
+
+@register
+class QuadShuffleDownInstructionDesc(BaseSIMDShuffleInstruction):
+	def __init__(self):
+		super().__init__('quad_shuffle_down', 0x1C7)
+
+SHUFFLE_MOD_MAP = {
+	0: 16,
+	1:  2,
+	2: 32,
+	3:  4,
+	4:  8,
+}
+
+SHUFFLE_MOD_MAP_INV = { v: k for k, v in SHUFFLE_MOD_MAP.items() }
+
+class ShuffleModDesc(OperandDesc):
+	def __init__(self, name, offset):
+		super().__init__(name)
+		self.add_field(offset, 3, self.name)
+
+	def decode(self, fields):
+		mod = fields[self.name]
+		if mod not in SHUFFLE_MOD_MAP:
+			return 'rawmod %d' % mod
+		mod = SHUFFLE_MOD_MAP[mod]
+		return 'mod %d' % mod if mod != 32 else ''
+
+	def encode_string(self, fields, opstr):
+		if opstr == '':
+			s = 2
+		elif opstr.startswith('mod '):
+			s = try_parse_integer(opstr[4:])
+			if s is None or s not in SHUFFLE_MOD_MAP_INV:
+				raise Exception('invalid MemoryShiftDesc %r' % (opstr,))
+			s = SHUFFLE_MOD_MAP_INV[s]
+		elif opstr.startswith('rawmod '):
+			s = try_parse_integer(opstr[7:])
+		else:
+			raise Exception('invalid MemoryShiftDesc %r' % (opstr,))
+		fields[self.name] = s
+
+	def encode_insert_optional_default(self, opstr):
+		if not opstr.startswith('mod '):
+			return 'mod 32'
+
+class BaseSIMDShuffleAndFillInstruction(MaskedInstructionDesc):
+	def __init__(self, name, op):
+		super().__init__(name, size=12)
+		self.add_constant(0, 12, op)
+		self.add_operand(FixedDstDesc('D', r_off=33, s_off=66))
+		self.add_operand(ShuffleSrcDesc('A', 41, c_off=72, d_off=73, s_off=81))
+		self.add_operand(ShuffleSrcDesc('B', 58, c_off=76, d_off=77))
+		self.add_operand(ShuffleIndexSrcDesc('C', 49, d_off=74, r_off=82))
+		self.add_operand(ShuffleModDesc('mod', 78))
+		self.add_operand(WaitDesc('W', lo=12, hi=15))
+		self.add_unsure_constant(18, 5, 0b10101)
+		self.add_unsure_constant(68, 1, 1)
+
+@register
+class SIMDShuffleAndFillUpInstructionDesc(BaseSIMDShuffleAndFillInstruction):
+	def __init__(self):
+		super().__init__('simd_shuffle_and_fill_up', 0x647)
+
+@register
+class SIMDShuffleAndFillDownInstructionDesc(BaseSIMDShuffleAndFillInstruction):
+	def __init__(self):
+		super().__init__('simd_shuffle_and_fill_down', 0x6C7)
+
 @register
 class StopInstructionDesc(InstructionDesc):
 	documentation_begin_group = 'Other Instructions'
