@@ -4447,11 +4447,33 @@ CMPSEL_CC = {
 	0xf: 'ieq',
 }
 
+CMPSEL_INVERT = {
+	'fgtn': '!fgtn',
+	'fltn': '!fltn',
+	'fgt':  '!fgt',
+	'flt':  '!flt',
+	'ugt':  'ule',
+	'ult':  'uge',
+	'sgt':  'sle',
+	'slt':  'sge',
+	'feq':  'fne',
+	'fge':  '!fge',
+	'fle':  '!fle',
+	'test': 'testz',
+	'ieq':  'ine'
+}
+CMPSEL_INVERT_INVERT = { v: k for k, v in CMPSEL_INVERT.items() }
+
 class CmpSelInstructionBase(MaskedInstructionDesc):
 	def __init__(self, name, size):
 		super().__init__(name, size=size)
 		self.add_constant(0, 3, 0b010)
 		self.add_field(18, 1, 'Di') # Is output (and therefore sel inputs) integer?
+
+	def matches(self, instr):
+		if (instr & 0x20008) == 0x20008: # Ds + Dl is used for the cc-targeting cmp
+			return False
+		return super().matches(instr)
 
 class CmpSel6InstructionDesc(CmpSelInstructionBase):
 	documentation_begin_group = 'Compare-Select Instructions'
@@ -4567,23 +4589,6 @@ class CmpSel6InstructionDesc(CmpSelInstructionBase):
 	'''
 
 class CmpSel8InstructionDesc(CmpSelInstructionBase):
-	invert = {
-		'fgtn': '!fgtn',
-		'fltn': '!fltn',
-		'fgt':  '!fgt',
-		'flt':  '!flt',
-		'ugt':  'ule',
-		'ult':  'uge',
-		'sgt':  'sle',
-		'slt':  'sge',
-		'feq':  'fne',
-		'fge':  '!fge',
-		'fle':  '!fle',
-		'test': 'testz',
-		'ieq':  'ine'
-	}
-	invert_invert = { v: k for k, v in invert.items() }
-
 	def __init__(self):
 		super().__init__('cmpsel', size=8)
 		self.add_constant(16, 1, 1) # Length > 6
@@ -4592,7 +4597,7 @@ class CmpSel8InstructionDesc(CmpSelInstructionBase):
 		cc_to_name = {}
 		for k, v in CMPSEL_CC.items():
 			# Treat the 8-byte instruction as a cmov, which means Z turns into a negation of the cc
-			cc_to_name[k] = self.invert[v]
+			cc_to_name[k] = CMPSEL_INVERT[v]
 			cc_to_name[k + 0x10] = v
 		self.add_operand(EnumDesc('cc', [
 			(48, 3, 'cc'),
@@ -4728,14 +4733,231 @@ class CmpSelInstructionDesc(InstructionGroup):
 			operand_strings[4:4] = operand_strings[2:4]
 			return {}
 		elif mnem == 'cmov':
-			if operand_strings[0] in CmpSel8InstructionDesc.invert:
+			if operand_strings[0] in CMPSEL_INVERT:
 				operand_strings.insert(5, operand_strings[1])
 			else:
-				operand_strings[0] = CmpSel8InstructionDesc.invert_invert[operand_strings[0]]
+				operand_strings[0] = CMPSEL_INVERT_INVERT[operand_strings[0]]
 				operand_strings.insert(4, operand_strings[1])
 			return {}
-		elif mnem == 'cmpsel':
+		elif mnem == 'cmpsel' and operand_strings[1] != 'rcc':
 			return {}
+
+class ImplicitCCDesc(AbstractDstOperandDesc):
+	def __init__(self, name='rcc'):
+		super().__init__(name)
+
+	def decode(self, fields):
+		return 'rcc'
+
+	def encode_string(self, fields, opstr):
+		if opstr != 'rcc':
+			raise Exception('invalid ImplicitCCDesc %r' % (opstr,))
+
+class SelCCSrcDesc(VariableSrcDesc):
+	def is_int(self, fields):
+		return True
+	def get_size(self, fields):
+		return 0
+
+	def encode_string(self, fields, opstr):
+		reg = try_parse_register(opstr)
+		if reg:
+			if reg.get_bit_size() != 16:
+				raise Exception(f"SelCCSrcDesc {opstr} must be 16 bits")
+			self.encode_reg(fields, reg)
+		else:
+			imm = try_parse_integer(opstr)
+			if imm is not None:
+				self.encode_imm(fields, imm)
+			else:
+				raise Exception(f'invalid SelCCSrcDesc {opstr}')
+		del fields[self.name + 's']
+
+class CmpSelCCConditionDesc(FieldDesc):
+	# CmpSelCC's select is the opposite of normal CmpSel
+	# (CmpSel is A cc B ? X : Y, but CmpSelCC is A cc B ? Y : X)
+	# Apple's compiler always sets Z=1 when using select, inverting the compare and matching the order of CmpSel
+	# Inverting the comparison op if select mode is enabled seemed like the least terrible option for readable disassembly
+
+	def __init__(self, name, start, size, z_off=4, cmp_off=21):
+		super().__init__(name, start, size)
+		self.add_field(z_off, 1, 'Z')
+		self.add_field(cmp_off, 1, 'cmp')
+
+	def decode(self, fields):
+		v = fields[self.name]
+		invert = fields['Z']
+		if not fields.get('cmp', 1):
+			invert = not invert
+		if invert:
+			if v in CMPSEL_CC:
+				return CMPSEL_INVERT[CMPSEL_CC[v]]
+			else:
+				return '!' + str(v)
+		else:
+			return CMPSEL_CC.get(v, v)
+
+	def encode_string(self, fields, opstr):
+		invert = False
+		if opstr in CMPSEL_INVERT_INVERT:
+			opstr = CMPSEL_INVERT_INVERT[opstr]
+			invert = True
+		elif opstr[0] == '!':
+			opstr = opstr[1:]
+			invert = True
+		if not fields.get('cmp', 1):
+			invert = not invert
+
+		fields['Z'] = invert
+
+		for k, v in CMPSEL_CC.items():
+			if v == opstr:
+				fields[self.name] = k
+				return
+
+		v = try_parse_integer(opstr)
+		if v is not None:
+			fields[self.name] = v
+			return
+
+		raise Exception('invalid enum %r (%r)' % (opstr, list(self.values.values())))
+
+class CmpSelCCInstructionBase(MaskedInstructionDesc):
+	def __init__(self, name, size):
+		super().__init__(name, size=size)
+		self.add_constant(0, 3, 0b010)
+		self.add_constant( 3, 1, 1) # Dl == 1
+		self.add_constant(17, 1, 1) # Ds == 1
+
+	def fields_to_mnem_base(self, fields):
+		return 'cmp' if fields['cmp'] else 'cmpsel'
+
+	def map_to_alias(self, mnem, operands):
+		if self.sizes[1] > 6 and mnem == 'cmp':
+			if str(operands[5]) == 'r0l':
+				del operands[5]
+			if str(operands[4]) == 'r0l':
+				del operands[4]
+		return mnem, operands
+
+class CmpSelCC6InstructionDesc(CmpSelCCInstructionBase):
+	# Technically, this probably supports overlapped sel operands just like normal cmpsel
+	# But I see no use for doing a cmpselcc with select enabled and inputs overlapped,
+	# so I'm not going to bother supporting [dis]assembly for it
+
+	def __init__(self):
+		super().__init__('cmpselcc', size=6)
+		self.add_constant(16, 1, 0) # Length = 6
+		self.add_operand(CmpSelCCConditionDesc('cc', 32, 3))
+		self.add_operand(ImplicitCCDesc())
+		self.add_operand(CmpSrcDesc('A',  9, common_layout='A', l_off=35))
+		self.add_operand(CmpSrcDesc('B', 25, common_layout='B', l_off=36, n_off=43))
+		self.add_operand(WaitDesc('W', 45))
+
+	def remove_fields(self, fields, sel):
+		del fields[sel]
+		del fields[sel + 'h']
+		del fields[sel + 'u']
+		del fields[sel + 'c']
+		del fields[sel + 'd']
+
+	def remove_x_y_wm(self, fields):
+		self.remove_fields(fields, 'X')
+		self.remove_fields(fields, 'Y')
+		del fields['Yn']
+		del fields['Wm']
+
+	def can_encode_fields(self, fields):
+		if bit_count(fields['Wm']) > 1:
+			return False
+		if not fields['cmp']: # cmpsel not supported
+			return False
+		fields = dict(fields)
+		self.remove_x_y_wm(fields)
+		return super().can_encode_fields(fields)
+
+	def encode_fields(self, fields):
+		fields['W'] = fields['Wm'].bit_length()
+		self.remove_x_y_wm(fields)
+		return super().encode_fields(fields)
+
+	pseudocode = '''
+	rcc = (A cc B) ^ Z
+	'''
+
+class CmpSelCC10InstructionDesc(EncodeWmAsWHelper, CmpSelCCInstructionBase):
+	def __init__(self):
+		super().__init__('cmpselcc', size=10)
+		self.add_constant(16, 1, 1) # Length > 6
+		self.add_constant(32, 2, 0b10) # Length = 10
+		self.add_operand(CmpSelCCConditionDesc('cc', [
+			(48, 3, 'cc'),
+			(34, 1, 'ccx'),
+		], None))
+		self.add_operand(ImplicitCCDesc())
+		self.add_operand(CmpSrcDesc('A',  9, common_layout='A', n_off=65))
+		self.add_operand(CmpSrcDesc('B', 25, common_layout='B', n_off=59))
+		self.add_operand(SelCCSrcDesc('X', 41, common_layout='X'))
+		self.add_operand(SelCCSrcDesc('Y', 73, common_layout='Y'))
+		self.add_operand(WaitDesc('W', 61))
+
+	pseudocode = '''
+	if cmp:
+		rcc = (A cc B) ^ Z
+	else:
+		if Z:
+			rcc = (A cc B ? X : Y) != 0
+		else
+			rcc = (A cc B ? Y : X) != 0
+	'''
+
+class CmpSelCC14InstructionDesc(CmpSelCCInstructionBase):
+	def __init__(self):
+		super().__init__('cmpselcc', size=14)
+		self.add_constant(16, 1, 1) # Length > 6
+		self.add_constant(32, 2, 0b11) # Length = 14
+		self.add_operand(CmpSelCCConditionDesc('cc', [
+			(48, 3, 'cc'),
+			(34, 1, 'ccx'),
+		], None))
+		self.add_operand(ImplicitCCDesc())
+		self.add_operand(CmpSrcDesc('A',  9, common_layout='A', a_off=96, b_off=87, n_off=65))
+		self.add_operand(CmpSrcDesc('B', 25, common_layout='B', a_off=97, b_off=88, n_off=59))
+		self.add_operand(SelCCSrcDesc('X', 41, common_layout='X'))
+		self.add_operand(SelCCSrcDesc('Y', 73, common_layout='Y'))
+		self.add_operand(WaitDesc('W', 61, 93))
+
+	pseudocode = '''
+	if cmp:
+		rcc = (A cc B) ^ Z
+	else:
+		if Z:
+			rcc = (A cc B ? X : Y) != 0
+		else
+			rcc = (A cc B ? Y : X) != 0
+	'''
+
+@register
+class CmpSelCCInstructionDesc(InstructionGroup):
+	def __init__(self):
+		super().__init__('cmpsel', [
+			CmpSelCC6InstructionDesc(),
+			CmpSelCC10InstructionDesc(),
+			CmpSelCC14InstructionDesc(),
+		])
+
+	def fields_for_mnem(self, mnem, operand_strings):
+		if mnem == 'cmp':
+			wait = None
+			if operand_strings[-1].startswith('wait '):
+				wait = operand_strings.pop()
+			while len(operand_strings) in range(4, 6):
+				operand_strings.append('r0l')
+			if wait is not None:
+				operand_strings.append(wait)
+			return {'cmp': 1}
+		elif mnem == 'cmpsel' and operand_strings[1] == 'rcc':
+			return {'cmp': 0}
 
 @register
 class ConvertF2IInstructionDesc(MaskedInstructionDesc):
