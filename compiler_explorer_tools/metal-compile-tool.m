@@ -25,6 +25,7 @@ static void dieIfError(NSError* err, const char* msg, ...) {
 
 enum Options {
 	OPTION_NO_FAST_MATH = 128,
+	OPTION_FUNCTION_TABLES = 129,
 	OPTION_TARGET_FORMAT,
 };
 
@@ -55,6 +56,7 @@ static const struct option longOpts[] = {
 	{"output",        required_argument, NULL, 'o'},
 	{"gpu",           required_argument, NULL, 'g'},
 	{"no-fast-math",  no_argument,       NULL, OPTION_NO_FAST_MATH},
+	{"function-tables", no_argument,     NULL, OPTION_FUNCTION_TABLES},
 	{"target-format", required_argument, NULL, OPTION_TARGET_FORMAT},
 	{"function",      required_argument, NULL, 'f'},
 	{NULL, 0, NULL, 0}
@@ -65,6 +67,7 @@ int main(int argc, char* argv[]) {
 		printUsageAndExit(argv[0]);
 	}
 	BOOL fastMath = YES;
+	BOOL functionTables = NO;
 	const char* output_name = NULL;
 	const char* gpu = NULL;
 	const char* target_function_name = NULL;
@@ -80,6 +83,9 @@ int main(int argc, char* argv[]) {
 				break;
 			case OPTION_NO_FAST_MATH:
 				fastMath = NO;
+				break;
+			case OPTION_FUNCTION_TABLES:
+				functionTables = YES;
 				break;
 			case OPTION_TARGET_FORMAT:
 				targetFmt = getFormat(optarg);
@@ -204,6 +210,7 @@ int main(int argc, char* argv[]) {
 	if (cs) {
 		MTLComputePipelineDescriptor* desc = [MTLComputePipelineDescriptor new];
 		[desc setComputeFunction:cs];
+		[desc setSupportAddingBinaryFunctions:functionTables];
 		[arc addComputePipelineFunctionsWithDescriptor:desc error:&err];
 		dieIfError(err, "Failed to add render pipeline with %s", [[cs name] UTF8String]);
 	}
