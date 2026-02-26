@@ -8,6 +8,7 @@ STOP_ON_STOP = True
 instruction_lengths = {
 	0x28f:  4, # ret
 	0x40f:  4, # else
+	0x48f:  4, # while
 	0x50f:  4, # if
 	0x407:  6, # barrier
 	0x157:  6, # jmp_exec_none
@@ -45,8 +46,8 @@ instruction_lengths = {
 	0x5bf:  8, # simd_fmin
 	0x7bf:  8, # simd_fmax
 	0x08f: 10, # call imm
-	0x10f: 10, # jmp_exec_none?
-	0x00f: 10, # jmp_incomplete?
+	0x10f: 10, # jmp_exec_none
+	0x00f: 10, # jmp_exec_any
 	0x727: 10, # unknown, appears in round implementation
 	0x02f: 10, # floor/ceil/trunc/rint
 	0x12f: 10, # sqrt
@@ -86,7 +87,6 @@ instruction_lengths = {
 	0x06f: 12, # ???
 	0x517: 12, # ???
 	0x2df: 14, # Used before calls to visible function tables
-	0x48f: 14, # while + jmp_exec_any?
 	0x067: 14, # device_load
 	0x267: 14, # threadgroup_load
 	0x6a7: 14, # pack rgb10a2 rg11b10f rgb9e5

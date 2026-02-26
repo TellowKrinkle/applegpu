@@ -1994,17 +1994,23 @@ class MaskDesc(OperandDesc):
 		if not opstr.startswith('mask '):
 			return 'mask 0xffffffff'
 
-
-class BranchOffsetDesc(FieldDesc):
+class BranchOffsetDesc(OperandDesc):
 	'''Signed offset in bytes from start of jump instruction (must be even)'''
 
 	documentation_skip = True
 
+	def __init__(self):
+		super().__init__('offset')
+		self.add_field(25, 47, 'off')
+		self.add_field(24,  1, 'abs')
+
 	def decode(self, fields):
-		v = fields[self.name]
+		v = fields['off'] << 1
 		#assert (v & 1) == 0
-		v = sign_extend(v, self.size)
-		return RelativeOffset(v)
+		if not fields['abs']:
+			return RelativeOffset(sign_extend(v, 48))
+		else:
+			return f'0x{v:x}'
 
 	def encode_string(self, fields, opstr):
 		if opstr.startswith('pc'):
@@ -2015,9 +2021,14 @@ class BranchOffsetDesc(FieldDesc):
 					masked = value & ((1 << self.size) - 1)
 					if value != sign_extend(masked, self.size):
 						raise Exception('out of range BranchOffsetDesc %r' % (opstr,))
-					fields[self.name] = masked
+					fields['off'] = masked >> 1
+					fields['abs'] = 0
 					return
-
+		else:
+			value = try_parse_integer(opstr)
+			if value is not None:
+				fields['off'] = value >> 1
+				fields['abs'] = 1
 		raise Exception('invalid BranchOffsetDesc %r' % (opstr,))
 
 
@@ -4743,14 +4754,26 @@ class CmpSelInstructionDesc(InstructionGroup):
 			return {}
 
 class ImplicitCCDesc(AbstractDstOperandDesc):
-	def __init__(self, name='rcc'):
+	def __init__(self, name='rcc', inv=None):
 		super().__init__(name)
+		self.has_inv = inv is not None
+		if self.has_inv:
+			self.add_field(inv, 1, 'inv')
 
 	def decode(self, fields):
+		if fields.get('inv', 0):
+			return '!rcc'
 		return 'rcc'
 
 	def encode_string(self, fields, opstr):
-		if opstr != 'rcc':
+		if opstr == '!rcc':
+			if self.has_inv:
+				fields['inv'] = 1
+			else:
+				raise Exception('Tried to invert inv-less ImplicitCCDesc')
+		elif opstr == 'rcc':
+			fields['inv'] = 0
+		else:
 			raise Exception('invalid ImplicitCCDesc %r' % (opstr,))
 
 class SelCCSrcDesc(VariableSrcDesc):
@@ -4958,6 +4981,65 @@ class CmpSelCCInstructionDesc(InstructionGroup):
 			return {'cmp': 1}
 		elif mnem == 'cmpsel' and operand_strings[1] == 'rcc':
 			return {'cmp': 0}
+
+class ExecMaskInstructionDesc(InstructionDesc):
+	pass
+
+@register
+class IfInstructionDesc(ExecMaskInstructionDesc):
+	documentation_begin_group = 'Execution Mask Stack Instructions'
+	def __init__(self):
+		super().__init__('if', size=4)
+		self.add_constant(0, 12, 0x50f)
+		self.add_constant(27, 2, 0)
+		self.add_unsure_constant(18, 5, 0b10101)
+		self.add_operand(ImplicitCCDesc(inv=29))
+		self.add_operand(ImmediateDesc('n', 24, 2))
+
+@register
+class WhileInstructionDesc(ExecMaskInstructionDesc):
+	def __init__(self):
+		super().__init__('while', size=4)
+		self.add_constant(0, 12, 0x48f)
+		self.add_unsure_constant(18, 5, 0b10101)
+		self.add_operand(ImplicitCCDesc(inv=29))
+		self.add_operand(ImmediateDesc('n', 24, 2))
+
+@register
+class PushExecInstructionDesc(ExecMaskInstructionDesc):
+	def __init__(self):
+		super().__init__('push_exec', size=4)
+		self.add_constant(0, 12, 0x50f)
+		self.add_constant(27, 2, 3)
+		self.add_unsure_constant(18, 5, 0b10101)
+		self.add_operand(ImmediateDesc('n', 24, 2))
+
+@register
+class PopExecInstructionDesc(ExecMaskInstructionDesc):
+	def __init__(self):
+		super().__init__('pop_exec', size=6)
+		self.add_constant(0, 12, 0x60f)
+		self.add_unsure_constant(18, 5, 1)
+		self.add_operand(ImmediateDesc('n', 24, 16))
+
+class JumpInstructionDesc(ExecMaskInstructionDesc):
+	def __init__(self, name, opcode):
+		super().__init__(name, size=10)
+		self.add_constant(0, 12, opcode)
+		self.add_unsure_constant(18, 5, 0b10101)
+		self.add_operand(BranchOffsetDesc())
+
+@register
+class JumpExecNoneInstructionDesc(JumpInstructionDesc):
+	documentation_begin_group = 'Jump Instructions'
+	def __init__(self):
+		super().__init__('jmp_exec_none', 0x10f)
+
+@register
+class JumpExecAnyInstructionDesc(JumpInstructionDesc):
+	documentation_begin_group = 'Jump Instructions'
+	def __init__(self):
+		super().__init__('jmp_exec_any', 0x00f)
 
 @register
 class ConvertF2IInstructionDesc(MaskedInstructionDesc):
