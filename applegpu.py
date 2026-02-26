@@ -5058,6 +5058,9 @@ class PopExecInstructionDesc(ExecMaskInstructionDesc):
 		self.add_operand(ImmediateDesc('n', 24, 16))
 
 class JumpInstructionDesc(ExecMaskInstructionDesc):
+	pass
+
+class JumpImmInstructionDesc(JumpInstructionDesc):
 	def __init__(self, name, opcode):
 		super().__init__(name, size=10)
 		self.add_constant(0, 12, opcode)
@@ -5065,16 +5068,30 @@ class JumpInstructionDesc(ExecMaskInstructionDesc):
 		self.add_operand(BranchOffsetDesc())
 
 @register
-class JumpExecNoneInstructionDesc(JumpInstructionDesc):
+class JumpExecNoneInstructionDesc(JumpImmInstructionDesc):
 	documentation_begin_group = 'Jump Instructions'
 	def __init__(self):
 		super().__init__('jmp_exec_none', 0x10f)
 
 @register
-class JumpExecAnyInstructionDesc(JumpInstructionDesc):
-	documentation_begin_group = 'Jump Instructions'
+class JumpExecAnyInstructionDesc(JumpImmInstructionDesc):
 	def __init__(self):
 		super().__init__('jmp_exec_any', 0x00f)
+
+@register
+class CallInstructionDesc(JumpImmInstructionDesc):
+	def __init__(self):
+		super().__init__('call', 0x08f)
+		self.add_operand(ImmediateDesc('unk', 12, 4))
+
+@register
+class RetInstructionDesc(JumpInstructionDesc):
+	def __init__(self):
+		super().__init__('ret', size=4)
+		self.add_constant(0, 12, 0x28f)
+		self.add_unsure_constant(17, 1, 1)
+		self.add_unsure_constant(18, 5, 0b10101)
+		self.add_operand(ImmediateDesc('unk', 12, 4))
 
 @register
 class ConvertF2IInstructionDesc(MaskedInstructionDesc):

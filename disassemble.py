@@ -13,7 +13,9 @@ instruction_lengths = {
 	0x407:  6, # barrier
 	0x157:  6, # jmp_exec_none
 	0x20f:  6, # call register?
+	0x2ef:  6, # used in recursive functions
 	0x60f:  6, # pop_exec
+	0x007:  8, # used in recursive functions
 	0x417:  8, # unpack unorm/snorm
 	0x527:  8, # popcount
 	0x627:  8, # unpack rgb10a2 rg11b10f rgb9e5
@@ -85,6 +87,7 @@ instruction_lengths = {
 	0x647: 12, # simd_shuffle_and_fill_up
 	0x6c7: 12, # simd_shuffle_and_fill_down
 	0x06f: 12, # ???
+	0x36f: 12, # used at beginning of recursive function
 	0x517: 12, # ???
 	0x2df: 14, # Used before calls to visible function tables
 	0x067: 14, # device_load
