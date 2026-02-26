@@ -291,6 +291,20 @@ class CF(Register):
 	def get_bit_size(self):
 		return 32 # ?
 
+# CC 6 and 7 act like always true / false
+cc_names = ['cc%d' % i for i in range(6)] + ['cc_always', 'cc_never']
+class CCReg(Register):
+	def __str__(self):
+		if self.n >= len(cc_names):
+			return "bad_cc_%d" % self.n
+		return self._str(cc_names)
+
+	def __repr__(self):
+		return self._repr('CCReg')
+
+	def get_bit_size(self):
+		return 1
+
 ureg16_names = []
 ureg32_names = []
 ureg64_names = []
@@ -339,6 +353,7 @@ for _namelist, _c in [
 	(ts_names, TextureState),
 	(ss_names, SamplerState),
 	(cf_names, CF),
+	(cc_names, CCReg),
 ]:
 	for _i, _name in enumerate(_namelist):
 		registers_by_name[_name] = (_c, _i)
@@ -4753,28 +4768,40 @@ class CmpSelInstructionDesc(InstructionGroup):
 		elif mnem == 'cmpsel' and operand_strings[1] != 'rcc':
 			return {}
 
-class ImplicitCCDesc(AbstractDstOperandDesc):
-	def __init__(self, name='rcc', inv=None):
+class CCDstDesc(AbstractDstOperandDesc):
+	def __init__(self, name, off=5):
 		super().__init__(name)
-		self.has_inv = inv is not None
-		if self.has_inv:
-			self.add_field(inv, 1, 'inv')
+		self.add_field(off, 3, self.name)
 
 	def decode(self, fields):
-		if fields.get('inv', 0):
-			return '!rcc'
-		return 'rcc'
+		return CCReg(fields[self.name])
 
 	def encode_string(self, fields, opstr):
-		if opstr == '!rcc':
-			if self.has_inv:
-				fields['inv'] = 1
-			else:
-				raise Exception('Tried to invert inv-less ImplicitCCDesc')
-		elif opstr == 'rcc':
-			fields['inv'] = 0
+		reg = try_parse_register(opstr)
+		if isinstance(reg, CCReg):
+			fields[self.name] = reg.n
 		else:
-			raise Exception('invalid ImplicitCCDesc %r' % (opstr,))
+			raise Exception('invalid CCDstDesc %r' % (opstr,))
+
+class CCSrcDesc(AbstractSrcOperandDesc):
+	def __init__(self, name, off=26, inv_off=29):
+		super().__init__(name)
+		self.add_field(off, 3, self.name)
+		self.add_field(inv_off, 1, self.name + 'n')
+
+	def decode(self, fields):
+		reg = CCReg(fields[self.name])
+		if fields[self.name + 'n']:
+			reg.flags.append(NEGATE_FLAG)
+		return reg
+
+	def encode_string(self, fields, opstr):
+		reg = try_parse_register(opstr)
+		if isinstance(reg, CCReg):
+			fields[self.name] = reg.n
+			fields[self.name + 'n'] = NEGATE_FLAG in reg.flags
+		else:
+			raise Exception('invalid CCSrcDesc %r' % (opstr,))
 
 class SelCCSrcDesc(VariableSrcDesc):
 	def is_int(self, fields):
@@ -4872,7 +4899,7 @@ class CmpSelCC6InstructionDesc(CmpSelCCInstructionBase):
 		super().__init__('cmpselcc', size=6)
 		self.add_constant(16, 1, 0) # Length = 6
 		self.add_operand(CmpSelCCConditionDesc('cc', 32, 3))
-		self.add_operand(ImplicitCCDesc())
+		self.add_operand(CCDstDesc('D'))
 		self.add_operand(CmpSrcDesc('A',  9, common_layout='A', l_off=35))
 		self.add_operand(CmpSrcDesc('B', 25, common_layout='B', l_off=36, n_off=43))
 		self.add_operand(WaitDesc('W', 45))
@@ -4917,7 +4944,7 @@ class CmpSelCC10InstructionDesc(EncodeWmAsWHelper, CmpSelCCInstructionBase):
 			(48, 3, 'cc'),
 			(34, 1, 'ccx'),
 		], None))
-		self.add_operand(ImplicitCCDesc())
+		self.add_operand(CCDstDesc('D'))
 		self.add_operand(CmpSrcDesc('A',  9, common_layout='A', n_off=65))
 		self.add_operand(CmpSrcDesc('B', 25, common_layout='B', n_off=59))
 		self.add_operand(SelCCSrcDesc('X', 41, common_layout='X'))
@@ -4943,7 +4970,7 @@ class CmpSelCC14InstructionDesc(CmpSelCCInstructionBase):
 			(48, 3, 'cc'),
 			(34, 1, 'ccx'),
 		], None))
-		self.add_operand(ImplicitCCDesc())
+		self.add_operand(CCDstDesc('D'))
 		self.add_operand(CmpSrcDesc('A',  9, common_layout='A', a_off=96, b_off=87, n_off=65))
 		self.add_operand(CmpSrcDesc('B', 25, common_layout='B', a_off=97, b_off=88, n_off=59))
 		self.add_operand(SelCCSrcDesc('X', 41, common_layout='X'))
@@ -4991,10 +5018,27 @@ class IfInstructionDesc(ExecMaskInstructionDesc):
 	def __init__(self):
 		super().__init__('if', size=4)
 		self.add_constant(0, 12, 0x50f)
-		self.add_constant(27, 2, 0)
 		self.add_unsure_constant(18, 5, 0b10101)
-		self.add_operand(ImplicitCCDesc(inv=29))
+		self.add_operand(CCSrcDesc('A'))
 		self.add_operand(ImmediateDesc('n', 24, 2))
+
+	def fields_to_mnem_base(self, fields):
+		if fields['A'] == 6: # always
+			return 'push_exec'
+		return self.name
+
+	def fields_to_operands(self, fields):
+		operands = super().fields_to_operands(fields)
+		if fields['A'] == 6: # always
+			# push_exec
+			del operands[0]
+		return operands
+
+	def fields_for_mnem(self, mnem, operand_strings):
+		if mnem == 'push_exec':
+			operand_strings.insert(0, 'cc_always')
+			return {}
+		return super().fields_for_mnem(mnem, operand_strings)
 
 @register
 class WhileInstructionDesc(ExecMaskInstructionDesc):
@@ -5002,16 +5046,7 @@ class WhileInstructionDesc(ExecMaskInstructionDesc):
 		super().__init__('while', size=4)
 		self.add_constant(0, 12, 0x48f)
 		self.add_unsure_constant(18, 5, 0b10101)
-		self.add_operand(ImplicitCCDesc(inv=29))
-		self.add_operand(ImmediateDesc('n', 24, 2))
-
-@register
-class PushExecInstructionDesc(ExecMaskInstructionDesc):
-	def __init__(self):
-		super().__init__('push_exec', size=4)
-		self.add_constant(0, 12, 0x50f)
-		self.add_constant(27, 2, 3)
-		self.add_unsure_constant(18, 5, 0b10101)
+		self.add_operand(CCSrcDesc('A'))
 		self.add_operand(ImmediateDesc('n', 24, 2))
 
 @register
