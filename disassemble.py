@@ -132,10 +132,12 @@ def instruction_length(code, offset):
 	elif op == 5: # texture load / sample
 		size = 14
 	elif op == 6:
-		if code[offset + 1] == 0:
+		if code[offset] & 0x8:
 			size = 4 # stop
+		elif code[offset + 2 : offset + 8] == bytes([6, 0, 6, 0, 6, 0]):
+			size = 8 # wait_long
 		else:
-			size = 8 # wait
+			size = 2 # wait
 	elif op == 7:
 		op = code[offset] | ((code[offset + 1] & 0xf) << 8)
 
