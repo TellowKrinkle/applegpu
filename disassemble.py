@@ -105,7 +105,7 @@ def instruction_length(code, offset):
 		if (code[offset + 2] & 4) == 0:
 			size = 4
 		# TODO: How does it actually figure this out?
-		elif (code[offset + 2] & 3) == 1 and (code[offset + 4] & 2) == 2:
+		elif op == 1 and (code[offset + 2] & 3) == 1 and (code[offset + 4] & 2) == 2:
 			size = 12 # fmul is special???
 		else:
 			size = 6 + 2 * (code[offset + 4] & 3)

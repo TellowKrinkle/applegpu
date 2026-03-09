@@ -8,6 +8,7 @@ MAX_OPCODE_LEN = 16
 BFLOAT_FLAG = 'bfloat'
 ABS_FLAG = 'abs'
 NEGATE_FLAG = 'neg'
+SAT_FLAG = 'sat'
 SIGN_EXTEND_FLAG = 'sx'
 CACHE_FLAG = 'cache'
 DISCARD_FLAG = 'discard'
@@ -16,6 +17,7 @@ OPERAND_FLAGS = [
 	BFLOAT_FLAG,
 	ABS_FLAG,
 	NEGATE_FLAG,
+	SAT_FLAG,
 	SIGN_EXTEND_FLAG,
 	CACHE_FLAG,
 	DISCARD_FLAG,
@@ -1033,24 +1035,37 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 	def is_int(self, fields):
 		return False
 	def get_size(self, fields):
-		return fields.get(self.name + 's', 1)
+		return fields.get(self.name + 's', 1 if self.fpu_width == 32 else 0)
 
-	def __init__(self, name, bit_off, l_off=None, c_off=None, d_off=None, common_layout=None, s_off=None, h_off=None, u_off=None, n_off=None, a_off=None, b_off=None, u_default=0):
+	def __init__(self, name, bit_off, fpu_width=32, l_off=None, c_off=None, d_off=None, common_layout=None, s_off=None, h_off=None, u_off=None, n_off=None, a_off=None, b_off=None, q_off=None, u_default=0):
 		super().__init__(name)
 		if common_layout is not None:
 			c_off = c_off or bit_off + 6
-			if s_off is None and (common_layout == 'A' or common_layout == 'B'):
+			if s_off is None and fpu_width == 32 and (common_layout == 'A' or common_layout == 'B'):
 				s_off = bit_off - 1
+			if l_off is None and fpu_width == 16 and (common_layout == 'A' or common_layout == 'B'):
+				# float16 fpu ops put l where s is on other ops
+				l_off = bit_off - 1
 			if common_layout == 'A':
 				d_off = d_off or 19
-				l_off = l_off or 51
-				u_off = u_off or l_off + 4
-				h_off = h_off or l_off + 5
-			elif common_layout == 'B':
+				if fpu_width == 16:
+					q_off = q_off or 51
+					u_off = u_off or q_off + 4
+					h_off = h_off or q_off + 5
+				else:
+					l_off = l_off or 51
+					u_off = u_off or l_off + 4
+					h_off = h_off or l_off + 5
+			elif common_layout =='B':
 				d_off = d_off or 20
-				l_off = l_off or 52
-				u_off = u_off or l_off + 5
-				h_off = h_off or l_off + 6
+				if fpu_width == 16:
+					q_off = q_off or 52
+					u_off = u_off or q_off + 5
+					h_off = h_off or q_off + 6
+				else:
+					l_off = l_off or 52
+					u_off = u_off or l_off + 5
+					h_off = h_off or l_off + 6
 			else:
 				l_off = l_off or bit_off - 1
 				d_off = d_off or bit_off - 2
@@ -1059,6 +1074,10 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 				n_off = n_off or bit_off - 5
 				a_off = a_off or bit_off - 6
 
+		if fpu_width == 16:
+			assert(s_off is None) # float16 fpu can't convert float32 to/from float16
+
+		self.fpu_width = fpu_width
 		self.value_shift = 1 if l_off is None else 0
 		if l_off is not None:
 			self.add_merged_field(self.name, [
@@ -1074,7 +1093,7 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 		self.add_field(d_off, 1, self.name + 'd')
 		if s_off is not None:
 			self.add_field(s_off, 1, self.name + 's')
-		else:
+		elif fpu_width == 32:
 			self.add_implicit_field(self.name + 's', 1)
 		if u_off is not None:
 			self.add_field(u_off, 1, self.name + 'u')
@@ -1084,6 +1103,8 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 			self.add_field(a_off, 1, self.name + 'a')
 		if b_off is not None:
 			self.add_field(b_off, 1, self.name + 'b')
+		if q_off is not None:
+			self.add_field(q_off, 1, self.name + 'q')
 
 		self.u_default = u_default
 
@@ -1099,6 +1120,7 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 		negate_bit = fields.get(self.name + 'n', 0)
 		abs_bit = fields.get(self.name + 'a', 0)
 		bf_bit = fields.get(self.name + 'b', 0)
+		sat_bit = fields.get(self.name + 'q', 0)
 
 		if uniform_bit:
 			value |= (discard_bit << 7) | (high_bit << 8)
@@ -1136,6 +1158,8 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 				r.flags.append(ABS_FLAG)
 			if negate_bit:
 				r.flags.append(NEGATE_FLAG)
+			if sat_bit:
+				r.flags.append(SAT_FLAG)
 
 		return r
 
@@ -1152,6 +1176,7 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 		n = NEGATE_FLAG in reg.flags or SIGN_EXTEND_FLAG in reg.flags
 		a = ABS_FLAG in reg.flags
 		b = BFLOAT_FLAG in reg.flags
+		q = SAT_FLAG in reg.flags
 		value = reg.n
 		if s:
 			value <<= 1
@@ -1173,6 +1198,7 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 		fields[self.name + 'n'] = n
 		fields[self.name + 'a'] = a
 		fields[self.name + 'b'] = b
+		fields[self.name + 'q'] = q
 
 	def encode_imm(self, fields, imm):
 		fields[self.name] = imm & 0x7f
@@ -1184,6 +1210,7 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 		fields[self.name + 'n'] = 0
 		fields[self.name + 'a'] = 0
 		fields[self.name + 'b'] = 0
+		fields[self.name + 'q'] = 0
 
 	def encode_string(self, fields, opstr):
 		reg = try_parse_register(opstr)
@@ -1195,8 +1222,11 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 			raise Exception(f'invalid VariableSrcDesc {opstr}')
 
 class VariableDstDesc(AbstractDstOperandDesc):
-	def __init__(self, name, bit_off=4, l_off=None, x_off=22, h_off=None, z_off=None, s_off=3, c_off=21, u_off=None, b_off=None):
+	def get_size(self, fields):
+		return fields.get(self.name + 's', 1 if self.fpu_width == 32 else 0)
+	def __init__(self, name, bit_off=4, fpu_width=32, l_off=None, x_off=22, h_off=None, z_off=None, s_off=3, c_off=21, u_off=None, b_off=None):
 		super().__init__(name)
+		self.fpu_width = fpu_width
 		self.value_shift = 1 if l_off is None else 0
 		main_fields = [(bit_off, 4, self.name)]
 		if l_off is not None:
@@ -1208,7 +1238,7 @@ class VariableDstDesc(AbstractDstOperandDesc):
 		self.add_merged_field(self.name, main_fields)
 		if s_off is not None:
 			self.add_field(s_off, 1, self.name + 's') # size
-		else:
+		elif fpu_width == 32:
 			self.add_implicit_field(self.name + 's', 1)
 		if c_off is not None:
 			self.add_field(c_off, 1, self.name + 'c') # cache
@@ -1223,7 +1253,7 @@ class VariableDstDesc(AbstractDstOperandDesc):
 		value = fields[self.name] << self.value_shift
 
 		uniform_bit = fields.get(self.name + 'u', 0) # is uniform
-		size_bit = fields[self.name + 's'] # is 32-bit
+		size_bit = self.get_size(fields) # is 32-bit
 		cache_bit = fields.get(self.name + 'c', 0) # TODO: What is it implicitly in MovImm7?
 		bf_bit = fields.get(self.name + 'b', 0)
 
@@ -3156,8 +3186,6 @@ class NewALUSrcDesc(FixedSrcDesc):
 class NewFloatSrcDesc(VariableSrcDesc):
 	def is_int(self, fields):
 		return False
-	def get_size(self, fields):
-		return fields.get(self.name + 's', 1)
 
 class FFMA4BDesc(NewFloatSrcDesc):
 	def get_size(self, fields):
@@ -3172,7 +3200,7 @@ class FFMA4BDesc(NewFloatSrcDesc):
 			fields[self.name + 's'] = 0
 
 
-class FFMAInstructionDescBase(MaskedInstructionDesc):
+class FMAInstructionDescBase(MaskedInstructionDesc):
 	def fields_to_mnem_suffix(self, fields):
 		suffix = ''
 
@@ -3936,8 +3964,8 @@ class IMAddSubInstructionDesc(IAddInstructionDescBase):
 		self.add_field(7, 1, 'P')
 
 
-class FFMA4InstructionDesc(FFMAInstructionDescBase):
-	documentation_begin_group = 'Floating-Point Arithmetic'
+class FFMA4InstructionDesc(FMAInstructionDescBase):
+	documentation_begin_group = '32-bit Floating-Point Arithmetic'
 	def __init__(self):
 		super().__init__('ffma', size=4)
 		self.add_constant(0, 3, 0b001)
@@ -4013,7 +4041,7 @@ class FFMA4InstructionDesc(FFMAInstructionDescBase):
 		D = A * B + D
 	'''
 
-class FFMA6InstructionDesc(FFMAInstructionDescBase):
+class FFMA6InstructionDesc(FMAInstructionDescBase):
 	def __init__(self):
 		super().__init__('ffma', size=6)
 		self.add_constant(0, 3, 0b001)
@@ -4050,7 +4078,7 @@ class FFMA6InstructionDesc(FFMAInstructionDescBase):
 			d_off=39,
 		))
 
-class FFMA8InstructionDesc(EncodeWmAsWHelper, FFMAInstructionDescBase):
+class FFMA8InstructionDesc(EncodeWmAsWHelper, FMAInstructionDescBase):
 	def __init__(self):
 		super().__init__('ffma', size=8)
 		self.add_constant(0, 3, 0b001)
@@ -4067,7 +4095,7 @@ class FFMA8InstructionDesc(EncodeWmAsWHelper, FFMAInstructionDescBase):
 		#self.add_field(61, 3, 'W') # wait
 		self.add_operand(WaitDesc('W', 61))
 
-class FFMA10InstructionDesc(FFMAInstructionDescBase):
+class FFMA10InstructionDesc(FMAInstructionDescBase):
 	def __init__(self):
 		super().__init__('ffma', size=(10,12), length_bit_pos=32)
 		self.add_constant(0, 3, 0b001)
@@ -4115,7 +4143,7 @@ class FFMAInstructionDesc(InstructionGroup):
 			FFMA10InstructionDesc(),
 		])
 
-class FMulAdd4InstructionDescBase(FFMAInstructionDescBase):
+class FMulAdd4InstructionDescBase(FMAInstructionDescBase):
 	def __init__(self, name, op):
 		super().__init__(name, size=4)
 		self.add_constant(0, 3, 0b001)
@@ -4139,7 +4167,7 @@ class FMulAdd4InstructionDescBase(FFMAInstructionDescBase):
 		fields['D'] >>= 1
 		return super().encode_fields(fields)
 
-class FMulAdd6InstructionDescBase(EncodeWmAsWHelper, FFMAInstructionDescBase):
+class FMulAdd6InstructionDescBase(EncodeWmAsWHelper, FMAInstructionDescBase):
 	def __init__(self, name, op):
 		super().__init__(name, size=6)
 		self.add_constant(0, 3, 0b001)
@@ -4155,7 +4183,7 @@ class FMulAdd6InstructionDescBase(EncodeWmAsWHelper, FFMAInstructionDescBase):
 
 		self.add_operand(WaitDesc('W', 45))
 
-class FMulAdd8InstructionDescBase(FFMAInstructionDescBase):
+class FMulAdd8InstructionDescBase(FMAInstructionDescBase):
 	def __init__(self, name, op):
 		super().__init__(name, size=8)
 		self.add_constant(0, 3, 0b001)
@@ -4171,7 +4199,7 @@ class FMulAdd8InstructionDescBase(FFMAInstructionDescBase):
 		self.add_operand(WaitDesc('W', 45, 61))
 		self.add_field(57, 1, 'S') # saturate
 
-class FMulAdd10InstructionDescBase(FFMAInstructionDescBase):
+class FMulAdd10InstructionDescBase(FMAInstructionDescBase):
 	def __init__(self, name, op, size):
 		super().__init__(name, size=size)
 		self.add_constant(0, 3, 0b001)
@@ -4294,6 +4322,333 @@ class FUnaryInstructionDesc(MaskedInstructionDesc):
 	D = {expr}(A)
 	# Note: Unlike other s fields, Ds is 1 for 16-bit, 0 for 32-bit
 	'''
+
+class HFMA4InstructionDesc(FMAInstructionDescBase):
+	documentation_begin_group = '16-bit Floating-Point Arithmetic'
+	def __init__(self):
+		super().__init__('hfma', size=4)
+		self.add_constant(0, 3, 0b000)
+
+		self.add_operand(VariableDstDesc('D',  4, fpu_width=16, s_off=None, l_off=3))
+		self.add_operand(NewFloatSrcDesc('A',  9, fpu_width=16, l_off= 8, c_off=15, d_off=19))
+		self.add_operand(NewFloatSrcDesc('B', 25, fpu_width=16, l_off=24, c_off=31, d_off=20))
+
+		self.add_field(16, 1, 'Z')
+
+		self.add_constant(17, 1, 0b1)
+		self.add_constant(18, 1, 0b0)
+
+	def fields_to_operands(self, fields):
+		operands = super().fields_to_operands(fields)
+		if fields['Z']:
+			operands.insert(2, operands[0])
+		else:
+			operands.insert(3, operands[0])
+		return operands
+
+	def can_alias_field(self, fields, field):
+		# Ignore discard, if we're writing to it it'll be discarded regardless of the flag
+		# Ignore cache flag as well, we can merge those
+		return fields[field] == fields['D']
+
+	def remove_c(self, fields):
+		del fields['C']
+		del fields['Cc']
+		del fields['Cd']
+
+	def can_encode_fields(self, fields):
+		if self.can_alias_field(fields, 'B'):
+			fields = dict(fields)
+			# Copy C onto B, the flag bits will validate fine regardless so we can skip those
+			fields['B'] = fields['C']
+		elif self.can_alias_field(fields, 'C'):
+			fields = dict(fields)
+		else:
+			return False
+
+		self.remove_c(fields)
+		return super().can_encode_fields(fields)
+
+	def encode_fields(self, fields):
+		if self.can_alias_field(fields, 'B'):
+			fields['Z'] = 1
+			fields['Dc'] |= fields['Bc']
+			fields['B']  = fields['C']
+			fields['Bc'] = fields['Cc']
+			fields['Bd'] = fields['Cd']
+		else:
+			fields['Z'] = 0
+			fields['Dc'] |= fields['Cc']
+		self.remove_c(fields)
+		return super().encode_fields(fields)
+
+	pseudocode = '''
+	if Z == 1:
+		D = A * D + B
+	else:
+		D = A * B + D
+	'''
+
+class HFMA6InstructionDesc(FMAInstructionDescBase):
+	def __init__(self):
+		super().__init__('hfma', size=6)
+		self.add_constant(0, 3, 0b000)
+
+		self.add_constant(16, 2, 0b10)
+
+		self.add_constant(18, 1, 0b1) # 'L'
+		self.add_constant(32, 2, 0b00)
+
+		self.add_operand(VariableDstDesc('D', fpu_width=16, s_off=None, l_off=3))
+
+		self.add_operand(NewFloatSrcDesc('A',
+			9,
+			fpu_width=16,
+			q_off=35,
+			l_off=8,
+			c_off=15,
+			d_off=19,
+		))
+
+		self.add_operand(NewFloatSrcDesc('B',
+			25,
+			fpu_width=16,
+			q_off=36,
+			h_off=38,
+			l_off=24,
+			c_off=31,
+			d_off=20,
+			u_off=37,
+		))
+
+		self.add_operand(NewFloatSrcDesc('C',
+			41,
+			fpu_width=16,
+			l_off=40,
+			c_off=47,
+			d_off=39,
+		))
+
+class HFMA8InstructionDesc(EncodeWmAsWHelper, FMAInstructionDescBase):
+	def __init__(self):
+		super().__init__('hfma', size=8)
+		self.add_constant(0, 3, 0b000)
+		self.add_constant(16, 2, 0b10)
+
+		self.add_constant(18, 1, 0b1) # 'L'
+		self.add_constant(32, 2, 0b01)
+
+		self.add_operand(VariableDstDesc('D', fpu_width=16, s_off=None, l_off=3, h_off=60, u_off=54))
+		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', fpu_width=16))
+		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', fpu_width=16, n_off=59))
+		self.add_operand(NewFloatSrcDesc('C', 41, common_layout='C', fpu_width=16, l_off=40, q_off=50))
+
+		#self.add_field(61, 3, 'W') # wait
+		self.add_operand(WaitDesc('W', 61))
+
+class HFMA10InstructionDesc(FMAInstructionDescBase):
+	def __init__(self):
+		super().__init__('hfma', size=(10,12), length_bit_pos=32)
+		self.add_constant(0, 3, 0b000)
+		self.add_constant(16, 2, 0b10)
+		self.add_constant(18, 1, 0b1) # 'L'
+		self.add_constant(33, 1, 0b1)
+
+		self.add_operand(VariableDstDesc('D', fpu_width=16, s_off=None, l_off=3, h_off=60, z_off=66, u_off=54, b_off=70))
+		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', fpu_width=16, a_off=80, n_off=65))
+		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', fpu_width=16, a_off=81, n_off=59))
+		self.add_operand(NewFloatSrcDesc('C', 41, common_layout='C', fpu_width=16, q_off=50))
+
+		self.add_operand(WaitDesc('W', 61, 77))
+
+		self.add_field(73, 1, 'S') # saturate
+		self.add_field(88, 1, 'q0') # set if first in function
+
+	pseudocode = '''
+	op: D = A * B + C
+
+	W -> wait for loads
+	S -> saturate
+	u -> is uniform (dest can be uniform)
+	s -> size (is 32-bit)
+	n -> negate
+	a -> abs
+	b -> bfloat
+	d -> discard
+	c -> cache
+	q -> saturate input
+	L, L2 -> length modifiers
+	dest = Dz:Dh:Dx:D:Dl
+	src = Ah:Ad:A:Al if Au, otherwise Ah:A:Al
+	q0 -> set if first in function?
+
+	TODO: undiscovered bits, verification
+	'''
+
+@register
+class HFMAInstructionDesc(InstructionGroup):
+	def __init__(self):
+		super().__init__('hfma', [
+			HFMA4InstructionDesc(),
+			HFMA6InstructionDesc(),
+			HFMA8InstructionDesc(),
+			HFMA10InstructionDesc(),
+		])
+
+class HMulAdd4InstructionDescBase(FMAInstructionDescBase):
+	def __init__(self, name, op):
+		super().__init__(name, size=4)
+		self.add_constant(0, 3, 0b000)
+
+		self.add_operand(VariableDstDesc('D',  4, fpu_width=16, s_off=None, l_off=3))
+		self.add_operand(NewFloatSrcDesc('A',  9, fpu_width=16, l_off= 8, c_off=15, d_off=19))
+		self.add_operand(NewFloatSrcDesc('B', 25, fpu_width=16, l_off=24, c_off=31, d_off=20))
+
+		self.add_constant(16, 2, op)
+		self.add_constant(18, 1, 0b0)
+
+	def can_encode_fields(self, fields):
+		if (fields['A'] & 1) or (fields['B'] & 1) or (fields['D'] & 1):
+			return False
+		return super().can_encode_fields(fields)
+
+	def encode_fields(self, fields):
+		# This was encoded by FMulAdd10, so we need to shift the register numbers since we have no l bits
+		fields['A'] >>= 1
+		fields['B'] >>= 1
+		fields['D'] >>= 1
+		return super().encode_fields(fields)
+
+class HMulAdd6InstructionDescBase(EncodeWmAsWHelper, FMAInstructionDescBase):
+	def __init__(self, name, op):
+		super().__init__(name, size=6)
+		self.add_constant(0, 3, 0b000)
+
+		self.add_constant(16, 2, op)
+
+		self.add_constant(18, 1, 0b1) # 'L'
+		self.add_constant(32, 2, 0b00)
+
+		self.add_operand(VariableDstDesc('D', fpu_width=16, s_off=None, l_off=3, h_off=44, u_off=38))
+		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', fpu_width=16, q_off=35))
+		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', fpu_width=16, q_off=36, n_off=43))
+
+		self.add_operand(WaitDesc('W', 45))
+
+class HMulAdd8InstructionDescBase(FMAInstructionDescBase):
+	def __init__(self, name, op):
+		super().__init__(name, size=8)
+		self.add_constant(0, 3, 0b000)
+		self.add_constant(16, 2, op)
+
+		self.add_constant(18, 1, 0b1) # 'L'
+		self.add_constant(32, 2, 0b01)
+
+		self.add_operand(VariableDstDesc('D', fpu_width=16, s_off=None, l_off=3, h_off=44, u_off=38, z_off=50))
+		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', fpu_width=16, q_off=35, n_off=49))
+		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', fpu_width=16, q_off=36, n_off=43))
+
+		self.add_operand(WaitDesc('W', 45, 61))
+		self.add_field(57, 1, 'S') # saturate
+
+class HMulAdd10InstructionDescBase(FMAInstructionDescBase):
+	def __init__(self, name, op):
+		super().__init__(name, size=10)
+		self.add_constant(0, 3, 0b000)
+		self.add_constant(16, 2, op)
+		self.add_constant(18, 1, 0b1) # 'L'
+		self.add_constant(32, 2, 0b10)
+
+		self.add_operand(VariableDstDesc('D', fpu_width=16, s_off=None, l_off=3, h_off=44, u_off=38, z_off=50))
+		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', fpu_width=16, q_off=35, n_off=49, a_off=64))
+		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', fpu_width=16, q_off=36, n_off=43, a_off=65))
+
+		self.add_operand(WaitDesc('W', 45, 61))
+		self.add_field(57, 1, 'S') # saturate
+
+class HMul4InstructionDesc(HMulAdd4InstructionDescBase):
+	def __init__(self):
+		super().__init__('hmul', 1)
+
+	pseudocode = '''
+	D = A * B
+	'''
+
+class HMul6InstructionDesc(HMulAdd6InstructionDescBase):
+	def __init__(self):
+		super().__init__('hmul', 1)
+
+	pseudocode = '''
+	D = A * B
+	'''
+
+class HMul8InstructionDesc(HMulAdd8InstructionDescBase):
+	def __init__(self):
+		super().__init__('hmul', 1)
+
+	pseudocode = '''
+	D = A * B
+	'''
+
+class HMul12InstructionDesc(HMulAdd10InstructionDescBase):
+	def __init__(self):
+		super().__init__('hmul', 1)
+
+	pseudocode = '''
+	D = A * B
+	'''
+
+@register
+class HMulInstructionDesc(InstructionGroup):
+	def __init__(self):
+		super().__init__('hmul', [
+			HMul4InstructionDesc(),
+			HMul6InstructionDesc(),
+			HMul8InstructionDesc(),
+			HMul12InstructionDesc(),
+		])
+
+class HAdd4InstructionDesc(HMulAdd4InstructionDescBase):
+	def __init__(self):
+		super().__init__('hadd', 0)
+
+	pseudocode = '''
+	D = A + B
+	'''
+
+class HAdd6InstructionDesc(HMulAdd6InstructionDescBase):
+	def __init__(self):
+		super().__init__('hadd', 0)
+
+	pseudocode = '''
+	D = A + B
+	'''
+
+class HAdd8InstructionDesc(HMulAdd8InstructionDescBase):
+	def __init__(self):
+		super().__init__('hadd', 0)
+
+	pseudocode = '''
+	D = A + B
+	'''
+
+class HAdd10InstructionDesc(HMulAdd10InstructionDescBase):
+	def __init__(self):
+		super().__init__('hadd', 0)
+
+	pseudocode = '''
+	D = A + B
+	'''
+
+@register
+class HAddInstructionDesc(InstructionGroup):
+	def __init__(self):
+		super().__init__('hadd', [
+			HAdd4InstructionDesc(),
+			HAdd6InstructionDesc(),
+			HAdd8InstructionDesc(),
+			HAdd10InstructionDesc(),
+		])
 
 @register
 class RintInstructionDesc(FUnaryInstructionDesc):
