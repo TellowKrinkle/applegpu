@@ -3965,7 +3965,7 @@ class IMAddSubInstructionDesc(IAddInstructionDescBase):
 
 
 class FFMA4InstructionDesc(FMAInstructionDescBase):
-	documentation_begin_group = '32-bit Floating-Point Arithmetic'
+	documentation_begin_group = '32-bit Floating-Point Multiply/Add'
 	def __init__(self):
 		super().__init__('ffma', size=4)
 		self.add_constant(0, 3, 0b001)
@@ -4324,7 +4324,7 @@ class FUnaryInstructionDesc(MaskedInstructionDesc):
 	'''
 
 class HFMA4InstructionDesc(FMAInstructionDescBase):
-	documentation_begin_group = '16-bit Floating-Point Arithmetic'
+	documentation_begin_group = '16-bit Floating-Point Multiply/Add'
 	def __init__(self):
 		super().__init__('hfma', size=4)
 		self.add_constant(0, 3, 0b000)
@@ -4652,6 +4652,7 @@ class HAddInstructionDesc(InstructionGroup):
 
 @register
 class RintInstructionDesc(FUnaryInstructionDesc):
+	documentation_begin_group = 'Other Floating-Point'
 	def __init__(self):
 		super().__init__('rint', 0x02F)
 		self.add_constant(65, 2, 0)
