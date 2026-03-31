@@ -1900,7 +1900,7 @@ class ImmediateDesc(IntegerFieldDesc):
 	def evaluate_thread(self, fields, corestate, thread):
 		return fields[self.name]
 
-class SignedImmediateDesc(FieldDesc):
+class SignedImmediateDesc(IntegerFieldDesc):
 	def _signed(self):
 		return True
 
@@ -2331,19 +2331,42 @@ class MemoryIndexDesc(OperandDesc):
 	def decode(self, fields):
 		return self.decode_impl(fields, allow64=False)
 
+	def encode_reg(self, fields, reg):
+		u16 = isinstance(reg, UReg16)
+		u32 = isinstance(reg, UReg32)
+		r16 = isinstance(reg, Reg16)
+		r32 = isinstance(reg, Reg32)
+		s = 1 if r32 or u32 else 0
+		value = reg.n
+		if s:
+			value <<= 1
+
+		fields[self.name + 't']  = 1 if r16 or r32 else 2
+		fields[self.name + 's']  = s
+		fields[self.name + 'sx'] = SIGN_EXTEND_FLAG in reg.flags
+		fields[self.name + 'd']  = DISCARD_FLAG     in reg.flags
+		fields[self.name]        = value & 0xff
+		fields[self.name + 'z']  = value >> 8
+		fields[self.name + 'x']  = 0
+		fields[self.name + 'h']  = 0
+
 	def encode_string(self, fields, opstr):
 		r = try_parse_register(opstr)
-		if r is not None:
-			if isinstance(r, Reg32):
-				fields[self.name + 't'] = 0
-				fields[self.name] = r.n << 1
-				return
+		if r is not None and isinstance(r, (Reg16, Reg32, UReg16, UReg32)):
+			return self.encode_reg(fields, r)
 
 		v = try_parse_integer(opstr)
 		if v is not None:
-			assert 0 <= v < 0x100
-			fields[self.name + 't'] = 1
-			fields[self.name] = v
+			assert 0 <= v < 65536
+			bit_8 = self.name + 'd' if self.is_load else self.name + 'z'
+			bit_9 = self.name + 'z' if self.is_load else self.name + 'd'
+			fields[self.name + 't'] = 0
+			fields[self.name]       = (v >>  0) & 0xff
+			fields[bit_8]           = (v >>  8) & 1
+			fields[bit_9]           = (v >>  9) & 1
+			fields[self.name + 'x'] = (v >> 10) & 15
+			fields[self.name + 's'] = (v >> 14) & 1
+			fields[self.name + 'h'] = (v >> 15) & 1
 			return
 
 		raise Exception('invalid MemoryIndexDesc %r' % (opstr,))
@@ -2425,11 +2448,16 @@ class MemoryBaseDesc(OperandDesc):
 
 	def encode_string(self, fields, opstr):
 		r = try_parse_register(opstr)
-		if not isinstance(r, (Reg64, UReg64)):
+		u64 = isinstance(r, UReg64)
+		r64 = isinstance(r, Reg64)
+		if not r64 and (not u64 or r.n & 1):
 			raise Exception('invalid MemoryBaseDesc %r' % (opstr,))
+		value = r.n
+		if u64:
+			value >>= 1
 
-		fields[self.name + 't'] = 1 if isinstance(r, UReg64) else 0
-		fields[self.name] = r.n << 1
+		fields[self.name + 'r'] = 1 if r64 else 0
+		fields[self.name] = value
 
 class SampleMaskDesc(OperandDesc):
 	def __init__(self, name, off=42, offx=56, offt=22, flags_type=2):
@@ -2559,10 +2587,8 @@ class MemoryRegDesc(OperandDesc):
 	def encode_string(self, fields, opstr):
 		regs = [try_parse_register(i) for i in opstr.split('_')]
 		if regs and all(isinstance(r, Reg32) for r in regs):
-			flags = 1
 			value = regs[0].n << 1
 		elif regs and all(isinstance(r, Reg16) for r in regs):
-			flags = 0
 			value = regs[0].n
 		else:
 			raise Exception('invalid MemoryRegDesc %r' % (opstr,))
@@ -2576,7 +2602,6 @@ class MemoryRegDesc(OperandDesc):
 
 		#fields['mask'] = (1 << len(regs)) - 1
 		fields[self.name] = value
-		fields[self.name + 't'] = flags
 
 
 class ThreadgroupMemoryRegDesc(OperandDesc):
