@@ -4,7 +4,6 @@ using namespace metal;
 kernel void
 add_arrays(
 	uint3 index [[thread_position_in_grid]],
-	uint3 tpg [[threads_per_grid]],
 	uint sgidx [[thread_index_in_simdgroup]],
 	device uint4 *output0 [[buffer(0)]],
 	device uint4 *output1 [[buffer(1)]],
@@ -13,7 +12,8 @@ add_arrays(
 	device uint4 *output4 [[buffer(4)]],
 	device uint4 *output5 [[buffer(5)]],
 	device uint4 *output6 [[buffer(6)]],
-	device uint4 *output7 [[buffer(7)]]
+	device uint4 *output7 [[buffer(7)]],
+	constant uint3& tpg   [[buffer(8)]]
 )
 {
 	uint4 q = output0[index.x];
@@ -31,12 +31,13 @@ add_arrays(
 	REP7
 
 	uint64_t outputp = (uint64_t) output0;
+	// Write output6 first so the register allocator puts tpg in u20 u21 u22 (matching codegen of m1 version)
+	output6[index.x] = uint4(6, tpg.x, tpg.y, tpg.z);
 	output0[index.x] = uint4(0, result, outputp, 10);
 	output1[index.x] = uint4(1, result, outputp, 11);
 	output2[index.x] = uint4(2, result, outputp, 12);
 	output3[index.x] = uint4(3, result, outputp, 13);
 	output4[index.x] = q;
 	output5[index.x] = r;
-	output6[index.x] = uint4(6, tpg.x, tpg.y, 16);
 	output7[index.x] = uint4(7, tpg.z, outputp, sgidx);
 }

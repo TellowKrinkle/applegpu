@@ -100,6 +100,13 @@ public:
 					[enc setBuffer:(__bridge id<MTLBuffer>)run.buffers[i].gpu_handle offset:0 atIndex:i];
 				}
 			}
+			uint32_t tpg[] = {
+				run.threadgroups_per_grid[0] * run.threads_per_threadgroup[0],
+				run.threadgroups_per_grid[1] * run.threads_per_threadgroup[1],
+				run.threadgroups_per_grid[2] * run.threads_per_threadgroup[2],
+				0,
+			};
+			[enc setBytes:tpg length:sizeof(tpg) atIndex:8];
 			[enc dispatchThreadgroups:MTLSizeMakeFromArray(run.threadgroups_per_grid)
 			    threadsPerThreadgroup:MTLSizeMakeFromArray(run.threads_per_threadgroup)];
 			[enc endEncoding];
