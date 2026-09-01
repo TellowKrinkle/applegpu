@@ -4532,18 +4532,6 @@ class HMulAdd4InstructionDescBase(FMAInstructionDescBase):
 		self.add_constant(16, 2, op)
 		self.add_constant(18, 1, 0b0)
 
-	def can_encode_fields(self, fields):
-		if (fields['A'] & 1) or (fields['B'] & 1) or (fields['D'] & 1):
-			return False
-		return super().can_encode_fields(fields)
-
-	def encode_fields(self, fields):
-		# This was encoded by FMulAdd10, so we need to shift the register numbers since we have no l bits
-		fields['A'] >>= 1
-		fields['B'] >>= 1
-		fields['D'] >>= 1
-		return super().encode_fields(fields)
-
 class HMulAdd6InstructionDescBase(EncodeWmAsWHelper, FMAInstructionDescBase):
 	def __init__(self, name, op):
 		super().__init__(name, size=6)
