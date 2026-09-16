@@ -632,7 +632,7 @@ class InstructionDesc:
 		assert self.matches(encoded)
 		encoded = self.mask_instr(encoded)
 
-		return self.to_bytes(encoded)
+		return encoded
 
 	def encode_raw_fields(self, fields):
 		assert sorted(lookup.keys()) == sorted(name for start, size, name in self.fields)
@@ -642,9 +642,8 @@ class InstructionDesc:
 		mf_lookup = dict(self.merged_fields)
 
 		raw_fields = {}
-		for name, field in self.merged_fields:
-			value = fields[name]
-			for subname, shift, size in field:
+		for name, value in fields.items():
+			for subname, shift, size in mf_lookup[name]:
 				mask = (1 << size) - 1
 				raw_fields[subname] = (value >> shift) & mask
 
@@ -652,7 +651,14 @@ class InstructionDesc:
 
 	def encode_fields(self, fields):
 		assert self._can_encode_fields(fields, print_err=True)
-		return self.patch_fields(self.bits, fields)
+		raw_fields = {}
+		for name, field in self.merged_fields:
+			value = fields[name]
+			for subname, shift, size in field:
+				mask = (1 << size) - 1
+				raw_fields[subname] = (value >> shift) & mask
+
+		return self.to_bytes(self.patch_raw_fields(self.bits, raw_fields))
 
 	def to_bytes(self, instr):
 		return bytes((instr >> (i*8)) & 0xFF for i in range(self.decode_size(instr)))
