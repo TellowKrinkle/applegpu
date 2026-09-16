@@ -26,6 +26,31 @@ OPERAND_FLAGS = [
 CACHE_HINT = '$'
 
 SR_NAMES = {
+	 1: 'core_id?',
+	 2: 'thread_index_in_simdgroup',
+	 3: 'thread_index_in_quadgroup?', # Apple compiler prefers `thread_index_in_simdgroup & 3`
+	 4: 'is_active_thread', # compare to zero for simd/quad_is_helper_thread
+	 5: 'simdgroup_index_in_threadgroup',
+	20: 'active_thread_index_in_quadgroup',
+	21: 'active_thread_index_in_simdgroup',
+	22: 'num_active_threads_in_quadgroup?',
+	23: 'num_active_threads_in_simdgroup?',
+	24: 'threads_per_threadgroup.x',
+	25: 'threads_per_threadgroup.y',
+	26: 'threads_per_threadgroup.z',
+	28: 'threadgroup_position_in_grid.x',
+	29: 'threadgroup_position_in_grid.y',
+	30: 'threadgroup_position_in_grid.z',
+	32: 'thread_position_in_grid.x',
+	33: 'thread_position_in_grid.y',
+	34: 'thread_position_in_grid.z',
+	36: 'thread_position_in_threadgroup.x',
+	37: 'thread_position_in_threadgroup.y',
+	38: 'thread_position_in_threadgroup.z',
+	39: 'thread_index_in_threadgroup',
+	40: 'dispatch_threads_per_threadgroup.x',
+	41: 'dispatch_threads_per_threadgroup.y',
+	42: 'dispatch_threads_per_threadgroup.z',
 }
 
 def bit_count(num):
