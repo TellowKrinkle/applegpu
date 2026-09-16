@@ -167,19 +167,51 @@ def run_test(instructions, state, device_memory=None, extra_data=None):
 	else:
 		pass
 
+def split_bits(val, nbits):
+	return [(val >> i) & 1 for i in range(nbits)]
+
 def test_bitop():
-	n = applegpu.opcode_to_number(bytes.fromhex('7e2d50ee6405'))
-	n |= (1 << 47) |  (1 << 46)
-	desc = applegpu.get_instruction_descriptor(n)
-	for Dt in [2, 0]:
-		for At in [1, 9, 0xD]:
-			for Bt in [1, 9, 0xD]:
-				n = desc.patch_fields(n, {'Dt': Dt, 'At': At, 'Bt': Bt})
-				for (d,a,b) in [(3, 1, 2)]:
-					n = desc.patch_fields(n, {'D': d << 1, 'A': a << 1, 'B': b << 1})
-					for tt in range(0x10):
-						n = desc.patch_fields(n, {'tt%d' % i: (tt >> i) & 1 for i in range(4)})
-						run_test(desc.to_bytes(n), RANDOM_INITIAL_STATE)
+	for encoding in ('03000000', '03000200', '03000600000000000000'):
+		nbytes = len(encoding) // 2
+		n = applegpu.opcode_to_number(bytes.fromhex(encoding))
+		desc = applegpu.get_instruction_descriptor(n)
+		unary = encoding == '03000000'
+		if nbytes == 10:
+			ops = range(16)
+		elif unary:
+			ops = (0, 1, 5)
+		else:
+			ops = (2, 3, 4)
+		for op in ops:
+			if nbytes == 10:
+				if op == 3: continue # Hangs GPU
+				tt0, tt1, tt2, tt3 = split_bits(op, 4)
+				n = desc.patch_fields(n, {'tt0': tt0, 'tt1': tt1, 'tt2': tt2, 'tt3': tt3})
+			else:
+				n = desc.patch_fields(n, {'op': op})
+
+			for sizes in range(2 if unary else 8):
+				Ds, As, Bs = split_bits(sizes, 3)
+				if unary:
+					n = desc.patch_fields(n, {'Ds': Ds})
+				else:
+					n = desc.patch_fields(n, {'Ds': Ds, 'As': As, 'Bs': Bs})
+				for nl in range(3 if unary else 1 if nbytes < 10 else 4):
+					Dl, Al, Bl = (nl > i for i in range(3))
+					for d, a, b in [(3, 1, 2), (3, 2, 0)]:
+						if unary:
+							n = desc.patch_fields(n, {'D': d * 2 + Dl, 'A': a * 2 + Al})
+						elif nbytes < 10:
+							n = desc.patch_fields(n, {'D': d, 'A': a, 'B': b})
+						else:
+							n = desc.patch_fields(n, {'D': d * 2 + Dl, 'A': a * 2 + Al, 'B': b * 2 + Bl})
+						for imm in range(2 if unary else 1 if nbytes < 10 else 3):
+							aimm, bimm = (imm == i for i in range(1, 3))
+							if unary:
+								n = desc.patch_fields(n, {'Au': aimm, 'Ac': aimm})
+							elif nbytes >= 10:
+								n = desc.patch_fields(n, {'Au': aimm, 'Ac': aimm, 'Bu': bimm, 'Bc': bimm})
+							run_test(desc.to_bytes(n), RANDOM_INITIAL_STATE)
 
 def test_add():
 	n = applegpu.opcode_to_number(bytes.fromhex('0e2d46c224002000'))
@@ -808,8 +840,8 @@ def main():
 	print('test_sr32()')
 	test_sr32()
 
-	# print('test_bitop()')
-	# test_bitop()
+	print('test_bitop()')
+	test_bitop()
 	
 	# print('test_add()')
 	# test_add()
