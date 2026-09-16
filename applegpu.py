@@ -1144,7 +1144,7 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 		else:
 			value |= (high_bit << 7)
 
-			if size_bit:
+			if size_bit and not bf_bit:
 				r = Reg32(value >> 1)
 			else:
 				r = Reg16(value)
@@ -1158,7 +1158,8 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 			if negate_bit:
 				r.flags.append(SIGN_EXTEND_FLAG)
 		else:
-			if bf_bit:
+			# bfloat + size decodes as 16-bit non-bfloat
+			if bf_bit and not size_bit:
 				r.flags.append(BFLOAT_FLAG)
 			if abs_bit:
 				r.flags.append(ABS_FLAG)
@@ -1227,7 +1228,34 @@ class VariableSrcDesc(AbstractSrcOperandDesc):
 		else:
 			raise Exception(f'invalid VariableSrcDesc {opstr}')
 
-class VariableDstDesc(AbstractDstOperandDesc):
+class EvaluateThreadFloat: # FMA4 needs to be able to read dst registers
+	def evaluate_thread_float(self, fields, corestate, thread):
+		o = self.decode(fields)
+
+		if isinstance(o, Immediate):
+			r = fma.f64_to_u64(o.value)
+		else:
+			bits = o.get_thread(corestate, thread)
+			bit_size = o.get_bit_size()
+			if bit_size == 16:
+				if BFLOAT_FLAG in o.flags:
+					r = fma.f32_to_f64(bits << 16, ftz=True)
+				else:
+					r = fma.f16_to_f64(bits, ftz=False)
+			elif bit_size == 32:
+				r = fma.f32_to_f64(bits, ftz=True)
+			else:
+				raise NotImplementedError()
+
+		if ABS_FLAG in o.flags:
+			r &= ~(1 << 63)
+		if NEGATE_FLAG in o.flags:
+			r ^= (1 << 63)
+		if SAT_FLAG in o.flags:
+			r = fma.saturate64(r)
+		return r
+
+class VariableDstDesc(AbstractDstOperandDesc, EvaluateThreadFloat):
 	def get_size(self, fields):
 		return fields.get(self.name + 's', 1 if self.fpu_width == 32 else 0)
 	def __init__(self, name, bit_off=4, fpu_width=32, l_off=None, x_off=22, h_off=None, z_off=None, s_off=3, c_off=21, u_off=None, b_off=None):
@@ -1272,12 +1300,13 @@ class VariableDstDesc(AbstractDstOperandDesc):
 			else:
 				r = UReg16(value)
 		else:
-			if size_bit:
+			if size_bit and not bf_bit:
 				r = Reg32(value >> 1)
 			else:
 				r = Reg16(value)
 
-		if bf_bit:
+		# bfloat + size decodes as 16-bit non-bfloat
+		if bf_bit and not size_bit:
 			r.flags.append(BFLOAT_FLAG)
 		if cache_bit:
 			r.flags.append(CACHE_FLAG)
@@ -3238,7 +3267,7 @@ class NewALUSrcDesc(FixedSrcDesc):
 	def __init__(self, name, bit_off, s_off=None, d_off=None, r_off=None, s_size=1):
 		super().__init__(name, bit_off, s_off=s_off, d_off=d_off, r_off=r_off, sx_off=r_off+1, s_size=s_size)
 
-class NewFloatSrcDesc(VariableSrcDesc):
+class NewFloatSrcDesc(VariableSrcDesc, EvaluateThreadFloat):
 	def is_int(self, fields):
 		return False
 
@@ -3254,8 +3283,35 @@ class FFMA4BDesc(NewFloatSrcDesc):
 		if fields['Z']:
 			fields[self.name + 's'] = 0
 
+class FSaturatableInstructionDesc(MaskedInstructionDesc):
+	def is_native_32_bit(self):
+		return self.name[0] == 'f'
+	def saturate_and_set_thread_result(self, fields, corestate, thread, result64):
+		if fields.get('S', 0):
+			result64 = fma.saturate64(result64)
 
-class FMAInstructionDescBase(MaskedInstructionDesc):
+		dest_size = self.operands['D'].get_bit_size(fields)
+
+		if dest_size == 16:
+			if self.is_native_32_bit():
+				# Round to 32-bit first, then to 16
+				result64 = fma.f32_to_f64(fma.f64_to_f32(result64, ftz=True))
+			if BFLOAT_FLAG in self.operands['D'].decode(fields).flags:
+				result = fma.f64_to_bfloat(result64, ftz=True)
+			else:
+				result = fma.f64_to_f16(result64, ftz=False)
+		else:
+			result = fma.f64_to_f32(result64, ftz=True)
+
+		self.operands['D'].set_thread(fields, corestate, thread, result)
+
+class FMAImplicitOperand:
+	def __init__(self, value):
+		self.value = value
+	def evaluate_thread_float(self, fields, corestate, thread):
+		return self.value
+
+class FMAInstructionDescBase(FSaturatableInstructionDesc):
 	def fields_to_mnem_suffix(self, fields):
 		suffix = ''
 
@@ -3286,6 +3342,28 @@ class FMAInstructionDescBase(MaskedInstructionDesc):
 
 	def fields_for_mnem_base(self, mnem):
 		if mnem == self.name: return {}
+
+	def get_operand(self, fields, operand):
+		if self.name == 'fmul' or self.name == 'hmul':
+			if operand == 'C':
+				return FMAImplicitOperand(1 << 63)
+		if self.name == 'fadd' or self.name == 'hadd':
+			if operand == 'C':
+				return self.operands['B']
+			if operand == 'B':
+				return FMAImplicitOperand(0x3ff << 52)
+		return self.operands[operand]
+
+	def exec_thread(self, instr, corestate, thread):
+		fields = dict(self.decode_fields(instr))
+
+		a64 = self.get_operand(fields, 'A').evaluate_thread_float(fields, corestate, thread)
+		b64 = self.get_operand(fields, 'B').evaluate_thread_float(fields, corestate, thread)
+		c64 = self.get_operand(fields, 'C').evaluate_thread_float(fields, corestate, thread)
+
+		result64 = fma.bfma64(a64, b64, c64, rounding=fma.ROUND_TO_ODD)
+
+		self.saturate_and_set_thread_result(fields, corestate, thread, result64)
 
 class BitOpSrcDesc(VariableSrcDesc):
 	def is_int(self, fields):
@@ -4171,6 +4249,13 @@ class FFMA4InstructionDesc(FMAInstructionDescBase):
 		fields['D'] >>= 1
 		self.remove_c(fields)
 		return super().encode_fields(fields)
+
+	def get_operand(self, fields, operand):
+		if operand == 'B':
+			return self.operands['D' if fields['Z'] else 'B']
+		if operand == 'C':
+			return self.operands['B' if fields['Z'] else 'D']
+		return self.operands[operand]
 
 	pseudocode = '''
 	if Z == 1:

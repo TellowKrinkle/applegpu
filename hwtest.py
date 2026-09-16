@@ -264,70 +264,95 @@ def test_madd():
 						n = desc.patch_fields(n, {'Ar': not aimm, 'Br': not bimm, 'Cr': not cimm})
 						run_test(desc.to_bytes(n), RANDOM_INITIAL_STATE)
 
-def test_fmadd():
-	n = applegpu.opcode_to_number(bytes.fromhex('3aad5ca2255e0200'))
+DOUBLE_ROUND_INITIAL_STATE = [
+	[0x3f800000, 0x3f800001, 0x3f800001, 0x3f800800, 0x3f800000, 0x3f800001, 0x3f800001, 0x3f802100, 0x3f801000, 0x3f801000, 0x3f808000, 0x3f808000, 0x3e00, 0x340c] + [0] * 18,
+	[0x3f802fff, 0x3fc02ffe, 0x3fc00fff, 0x3f800800, 0x3f817fff, 0x3fc17ffe, 0x3fc07fff, 0x3ff84000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000, 0x7801, 0x7800] + [0] * 18,
+	[0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x33800000, 0x33800001, 0x33800000, 0x33800001, 0x8400, 0x8400] + [0] * 18,
+] + [[0] * 32] * 5
+
+def test_ffma():
+	run_test(assemble.assemble_line('ffma r3l, r0,  r1,  r2 '), DOUBLE_ROUND_INITIAL_STATE)
+	run_test(assemble.assemble_line('ffma r3l, r0l, r1l, r2l'), DOUBLE_ROUND_INITIAL_STATE)
+	run_test(assemble.assemble_line('ffma r3l.bfloat, r0,  r1,  r2 '), DOUBLE_ROUND_INITIAL_STATE)
+	run_test(assemble.assemble_line('ffma r3l.bfloat, r0l, r1l, r2l'), DOUBLE_ROUND_INITIAL_STATE)
+	for encoding in ('01000200', '010006000000', '0100060001000000', '01000600020000000000'):
+		nbytes = len(encoding) // 2
+		n = applegpu.opcode_to_number(bytes.fromhex(encoding))
+		desc = applegpu.get_instruction_descriptor(n)
+		assert desc.decode_remainder(n) == 0, hex(desc.decode_remainder(n))
+		for sizes in range(16 if nbytes >= 8 else 8):
+			Ds, As, Bs, Cs = split_bits(sizes, 4)
+			n = desc.patch_fields(n, {'Ds': Ds, 'As': As, 'Bs': Bs})
+			if nbytes >= 8:
+				n = desc.patch_fields(n, {'Cs': Cs})
+			for nl in range(5 if nbytes >= 6 else 2):
+				Dl, Al, Bl, Cl = (nl > i for i in range(4))
+				for d, a, b, c in [(6, 0, 2, 4)]:
+					if nbytes < 6:
+						n = desc.patch_fields(n, {'D': d, 'A': a, 'B': b, 'Z': nl})
+					else:
+						n = desc.patch_fields(n, {'D': d * 2 + Dl, 'A': a * 2 + Al, 'B': b * 2 + Bl, 'C': c * 2 + Cl})
+					m = n
+					for extra in range({10: 32, 8: 2, 6: 1, 4: 1}[nbytes]):
+						Cb, Db, Ab, Bb, S = split_bits(extra, 5)
+						if nbytes >= 8:
+							m = desc.patch_fields(m, {'Cb': Cb})
+						if nbytes >= 10:
+							m = desc.patch_fields(m, {'Db': Db, 'Ab': Ab, 'Bb': Bb, 'S': S})
+						run_test(desc.to_bytes(m), RANDOM_INITIAL_STATE)
+					if nl == 0:
+						m = n
+						for extra in range(1, {10: 128, 8: 8, 6: 1, 4: 1}[nbytes]):
+							Cn, Ca, Bn, Ba, An, Aa, S = split_bits(extra, 7)
+							m = desc.patch_fields(m, {'Cn': Cn, 'Ca': Ca, 'Bn': Bn})
+							if nbytes >= 10:
+								m = desc.patch_fields(m, {'Ba': Ba, 'An': An, 'Aa': Aa, 'S': S})
+							run_test(desc.to_bytes(m), RANDOM_INITIAL_STATE)
+
+def test_f2arg(encoding):
+	nbytes = len(encoding) // 2
+	n = applegpu.opcode_to_number(bytes.fromhex(encoding))
 	desc = applegpu.get_instruction_descriptor(n)
-	assert desc.decode_remainder(n) == 0, hex(desc.decode_remainder(n))
-
 	for sizes in range(8):
-		Dt = 2 if sizes & 1 else 0
-		At = 9 if sizes & 2 else 1
-		Ct = 9 if sizes & 4 else 1
-		for Bt in [0, 1, 9]:
-			n = desc.patch_fields(n, {'Dt': Dt, 'At': At, 'Bt': Bt, 'Ct': Ct})
-			for Bm in range(4):
-				n = desc.patch_fields(n, {'Bm': Bm})
-				for (d,a,b,c) in [(6, 0, 2, 4)]:
-					d_ors = [0] #[0,1] if Dt == 2 else [0]
-					for d_or in d_ors:
-						D = (d << 1) | d_or
-						n = desc.patch_fields(n, {'D': D, 'A': a << 1, 'B': b << 1, 'C': c << 1})
-						for S in [1, 0]:
-							n = desc.patch_fields(n, {'S': S})
-							run_test(desc.to_bytes(n), RANDOM_INITIAL_STATE)
-
+		Ds, As, Bs = split_bits(sizes, 3)
+		n = desc.patch_fields(n, {'Ds': Ds, 'As': As, 'Bs': Bs})
+		for nl in range(4 if nbytes >= 6 else 1):
+			Dl, Al, Bl = (nl > i for i in range(3))
+			for d, a, b in [(6, 0, 2)]:
+				if nbytes < 6:
+					n = desc.patch_fields(n, {'D': d, 'A': a, 'B': b})
+				else:
+					n = desc.patch_fields(n, {'D': d * 2 + Dl, 'A': a * 2 + Al, 'B': b * 2 + Bl})
+				m = n
+				for extra in range({10: 16, 8: 16, 6: 1, 4: 1}[nbytes]):
+					Db, Ab, Bb, S = split_bits(extra, 4)
+					if nbytes >= 8:
+						m = desc.patch_fields(m, {'Db': Db, 'Ab': Ab, 'Bb': Bb, 'S': S})
+					run_test(desc.to_bytes(m), RANDOM_INITIAL_STATE)
+				if nl == 0:
+					m = n
+					for extra in range(1, {10: 128, 8: 8, 6: 1, 4: 1}[nbytes]):
+						An, Bn, Aa, Ba, S = split_bits(extra, 5)
+						m = desc.patch_fields(m, {'An': An, 'Bn': Bn, 'S': S})
+						if nbytes >= 10:
+							m = desc.patch_fields(m, {'Ba': Ba, 'Aa': Aa})
+						run_test(desc.to_bytes(m), RANDOM_INITIAL_STATE)
 
 def test_fadd():
-	n = applegpu.opcode_to_number(bytes.fromhex('2aad5ec22500'))
-	desc = applegpu.get_instruction_descriptor(n)
-	assert desc.decode_remainder(n) == 0, hex(desc.decode_remainder(n))
-
-	for sizes in range(4):
-		Dt = 2 if sizes & 1 else 0
-		At = 9 if sizes & 2 else 1
-		for Bt in [0, 1, 9]:
-			n = desc.patch_fields(n, {'Dt': Dt, 'At': At, 'Bt': Bt})
-			for Bm in range(4):
-				n = desc.patch_fields(n, {'Bm': Bm})
-				for (d,a,b) in [(6, 0, 2)]:
-					d_ors = [0]
-					for d_or in d_ors:
-						D = (d << 1) | d_or
-						n = desc.patch_fields(n, {'D': D, 'A': a << 1, 'B': b << 1})
-						for S in [1, 0]:
-							n = desc.patch_fields(n, {'S': S})
-							run_test(desc.to_bytes(n), RANDOM_INITIAL_STATE)
+	run_test(assemble.assemble_line('fadd r3l, r0, r2'), DOUBLE_ROUND_INITIAL_STATE)
+	run_test(assemble.assemble_line('fadd r3l.bfloat, r0, r2'), DOUBLE_ROUND_INITIAL_STATE)
+	test_f2arg('01000000')
+	test_f2arg('010004000000')
+	test_f2arg('0100040001000000')
+	test_f2arg('01000400020000000000')
 
 def test_fmul():
-	n = applegpu.opcode_to_number(bytes.fromhex('1aad5ec22500'))
-	desc = applegpu.get_instruction_descriptor(n)
-	assert desc.decode_remainder(n) == 0, hex(desc.decode_remainder(n))
-
-	for sizes in range(4):
-		Dt = 2 if sizes & 1 else 0
-		At = 9 if sizes & 2 else 1
-		for Bt in [0, 1, 9]:
-			n = desc.patch_fields(n, {'Dt': Dt, 'At': At, 'Bt': Bt})
-			for Bm in range(4):
-				n = desc.patch_fields(n, {'Bm': Bm})
-				for (d,a,b) in [(6, 0, 2)]:
-					d_ors = [0]
-					for d_or in d_ors:
-						D = (d << 1) | d_or
-						n = desc.patch_fields(n, {'D': D, 'A': a << 1, 'B': b << 1})
-						for S in [1, 0]:
-							n = desc.patch_fields(n, {'S': S})
-							run_test(desc.to_bytes(n), RANDOM_INITIAL_STATE)
+	run_test(assemble.assemble_line('fmul r3l, r0, r1'), DOUBLE_ROUND_INITIAL_STATE)
+	run_test(assemble.assemble_line('fmul r3l.bfloat, r0, r1'), DOUBLE_ROUND_INITIAL_STATE)
+	test_f2arg('01000100')
+	test_f2arg('010005000000')
+	test_f2arg('0100050001000000')
+	test_f2arg('01000500020000000000')
 
 def test_fmadd16():
 	n = applegpu.opcode_to_number(bytes.fromhex('362c5dc0055e'))
@@ -857,14 +882,14 @@ def main():
 	print('test_madd()')
 	test_madd()
 	
-	# print('test_fmadd()')
-	# test_fmadd()
+	print('test_ffma()')
+	test_ffma()
 	
-	# print('test_fadd()')
-	# test_fadd()
+	print('test_fadd()')
+	test_fadd()
 	
-	# print('test_fmul()')
-	# test_fmul()
+	print('test_fmul()')
+	test_fmul()
 	
 	# print('test_fmadd16()')
 	# test_fmadd16()
