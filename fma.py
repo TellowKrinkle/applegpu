@@ -45,6 +45,10 @@ F32_EXPONENT_BITS = 8
 F32_EXPONENT_MASK = (1 << F32_EXPONENT_BITS) - 1
 F32_SIGN_SHIFT = F32_EXPONENT_BITS + F32_FRACTION_BITS
 
+BF_FRACTION_BITS = 7
+BF_FRACTION_MASK = (1 << BF_FRACTION_BITS) - 1
+BF_SIGN_SHIFT = F32_EXPONENT_BITS + BF_FRACTION_BITS
+
 F64_BIAS = 1023
 F64_FRACTION_BITS = 52
 F64_FRACTION_MASK = (1 << F64_FRACTION_BITS) - 1
@@ -276,6 +280,37 @@ def f64_to_f16(bits, ftz=False):
 	f = shr_compress(f, (F64_FRACTION_BITS - F16_FRACTION_BITS - 2))
 
 	return (s << F16_SIGN_SHIFT) + (e << F16_FRACTION_BITS) + do_rounding(f)
+
+def f64_to_bfloat(bits, ftz=False):
+	s = bits >> F64_SIGN_SHIFT
+	e = (bits >> F64_FRACTION_BITS) & F64_EXPONENT_MASK
+	f = bits & F64_FRACTION_MASK
+
+	if e == F64_EXPONENT_MASK:
+		e = F32_EXPONENT_MASK
+	elif e == 0 and f == 0:
+		e = 0
+	else:
+		e = (e - F64_BIAS + F32_BIAS)
+		if ftz:
+			if e <= 0:
+				f = 0
+				e = 0
+		else:
+			if e < -BF_FRACTION_BITS:
+				e = 0
+				f = 1
+			elif e <= 0:
+				f |= 1 << F64_FRACTION_BITS
+				f = shr_compress(f, -e + 1)
+				e = 0
+		if e >= F32_EXPONENT_MASK:
+			e = F32_EXPONENT_MASK
+			f = 0
+
+	f = shr_compress(f, (F64_FRACTION_BITS - BF_FRACTION_BITS - 2))
+
+	return (s << BF_SIGN_SHIFT) + (e << BF_FRACTION_BITS) + do_rounding(f)
 
 def split(b):
 	sign = b >> 63
