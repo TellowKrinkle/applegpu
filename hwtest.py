@@ -354,28 +354,39 @@ def test_fmul():
 	test_f2arg('0100050001000000')
 	test_f2arg('01000500020000000000')
 
-def test_fmadd16():
-	n = applegpu.opcode_to_number(bytes.fromhex('362c5dc0055e'))
-	desc = applegpu.get_instruction_descriptor(n)
-	assert desc.decode_remainder(n) == 0, hex(desc.decode_remainder(n))
-	for Dt in [2, 0]:
-		n = desc.patch_fields(n, {'Dt': Dt})
-		At = 1
-		Bt = 1
-		Ct = 1
-		n = desc.patch_fields(n, {'At': At, 'Bt': Bt, 'Ct': Ct})
-		for Am in range(4):
-			for Bm in range(4):
-				for Cm in range(4):
-					n = desc.patch_fields(n, {'Bm': Bm, 'Am': Am, 'Cm': Cm})
-					for (d,a,b,c) in [(6, 0, 2, 4)]:
-						d_ors = [0]
-						for d_or in d_ors:
-							D = (d << 1) | d_or
-							n = desc.patch_fields(n, {'D': D, 'A': a << 1, 'B': b << 1, 'C': c << 1})
-							for S in [1, 0]:
-								n = desc.patch_fields(n, {'S': S})
-								run_test(desc.to_bytes(n), RANDOM_INITIAL_STATE)
+def test_hfma():
+	run_test(assemble.assemble_line('hfma r3l, r0l, r1l, r2l'), DOUBLE_ROUND_INITIAL_STATE)
+	for encoding in ('00000200', '000006000000', '0000060001000000', '00000600020000000000'):
+		nbytes = len(encoding) // 2
+		n = applegpu.opcode_to_number(bytes.fromhex(encoding))
+		desc = applegpu.get_instruction_descriptor(n)
+		assert desc.decode_remainder(n) == 0, hex(desc.decode_remainder(n))
+		for nl in range(5 if nbytes >= 6 else 4):
+			Dl, Al, Bl, Cl = (nl > i for i in range(4))
+			for d, a, b, c in [(6, 0, 2, 4)]:
+				n = desc.patch_fields(n, {'D': d * 2 + Dl, 'A': a * 2 + Al, 'B': b * 2 + Bl})
+				if nbytes >= 6:
+					n = desc.patch_fields(n, {'C': c * 2 + Cl})
+				m = n
+				for extra in range({10: 16, 8: 8, 6: 4, 4: 2}[nbytes]):
+					Aq, Bq, Cq, S = split_bits(extra, 4)
+					if nbytes < 6:
+						m = desc.patch_fields(m, {'Z': extra})
+					else:
+						m = desc.patch_fields(m, {'Aq': Aq, 'Bq': Bq})
+					if nbytes >= 8:
+						m = desc.patch_fields(m, {'Cq': Cq})
+					if nbytes >= 10:
+						m = desc.patch_fields(m, {'S': S})
+					run_test(desc.to_bytes(m), RANDOM_INITIAL_STATE)
+				if nl == 0:
+					m = n
+					for extra in range(1, {10: 128, 8: 8, 6: 1, 4: 1}[nbytes]):
+						Cn, Ca, Bn, Ba, An, Aa, S = split_bits(extra, 7)
+						m = desc.patch_fields(m, {'Cn': Cn, 'Ca': Ca, 'Bn': Bn})
+						if nbytes >= 10:
+							m = desc.patch_fields(m, {'Ba': Ba, 'An': An, 'Aa': Aa, 'S': S})
+						run_test(desc.to_bytes(m), RANDOM_INITIAL_STATE)
 
 
 def test_shift():
@@ -891,8 +902,8 @@ def main():
 	print('test_fmul()')
 	test_fmul()
 	
-	# print('test_fmadd16()')
-	# test_fmadd16()
+	print('test_hfma()')
+	test_hfma()
 	
 	# print('test_shift()')
 	# test_shift()

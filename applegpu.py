@@ -4606,6 +4606,13 @@ class HFMA4InstructionDesc(FMAInstructionDescBase):
 		self.remove_c(fields)
 		return super().encode_fields(fields)
 
+	def get_operand(self, fields, operand):
+		if operand == 'B':
+			return self.operands['D' if fields['Z'] else 'B']
+		if operand == 'C':
+			return self.operands['B' if fields['Z'] else 'D']
+		return self.operands[operand]
+
 	pseudocode = '''
 	if Z == 1:
 		D = A * D + B
