@@ -2854,6 +2854,10 @@ class MovImm7InstructionDesc(MaskedInstructionDesc):
 		except ValueError:
 			return None
 
+	def exec_thread(self, instr, corestate, thread):
+		fields = dict(self.decode_fields(instr))
+		self.operands['D'].set_thread(fields, corestate, thread, fields['imm7'])
+
 @register
 class MovImm32InstructionDesc(MaskedInstructionDesc):
 	#documentation_begin_group = 'Miscellaneous Instructions'
@@ -2874,6 +2878,10 @@ class MovImm32InstructionDesc(MaskedInstructionDesc):
 			(25,  7, 'immE'),
 		]))
 
+	def exec_thread(self, instr, corestate, thread):
+		fields = dict(self.decode_fields(instr))
+		self.operands['D'].set_thread(fields, corestate, thread, fields['imm32'])
+
 @register
 class MovFromSrInstructionDesc(MaskedInstructionDesc):
 	#documentation_begin_group = 'Miscellaneous Instructions'
@@ -2890,6 +2898,13 @@ class MovFromSrInstructionDesc(MaskedInstructionDesc):
 	pseudocode = '''
 	g -> output wait group
 	'''
+
+	def exec_thread(self, instr, corestate, thread):
+		fields = dict(self.decode_fields(instr))
+		if fields['SR'] == 32:
+			self.operands['D'].set_thread(fields, corestate, thread, thread)
+		else:
+			assert False, 'TODO'
 
 class DeviceLoadStoreInstructionDesc(MaskedInstructionDesc):
 	def __init__(self, name, is_load, high_base):
@@ -3284,6 +3299,27 @@ class BitOpInstructionBase(MaskedInstructionDesc):
 		super().__init__(name, size=size)
 		self.add_constant(0, 3, 0b011)
 
+	def get_tt(self, fields):
+		return tuple(fields['tt' + str(i)] for i in range(4))
+
+	def exec_thread(self, instr, corestate, thread):
+		fields = dict(self.decode_fields(instr))
+
+		a = self.operands['A'].evaluate_thread(fields, corestate, thread)
+		b = self.operands['B'].evaluate_thread(fields, corestate, thread) if 'B' in self.operands else 0
+
+		tt = self.get_tt(fields)
+		if tt == (0, 0, 1, 1) or tt == (1, 1, 0, 0):
+			result = a & b
+		else:
+			result = 0
+			if tt[0]: result |= ~a & ~b
+			if tt[1]: result |=  a & ~b
+			if tt[2]: result |= ~a &  b
+			if tt[3]: result |=  a &  b
+
+		self.operands['D'].set_thread(fields, corestate, thread, result)
+
 BITOPMOV_OPS = {
 	0: 'zero', # Unobserved
 	1: 'mov',
@@ -3313,6 +3349,12 @@ class BitOpMovInstructionDesc(BitOpInstructionBase):
 			D[thread] = 0
 		# Other values of op map to bitop
 	'''
+
+	def get_tt(self, fields):
+		if fields['op'] == 0:
+			return (0, 0, 0, 0)
+		else:
+			return (0, 1, 0, 1)
 
 	def fields_to_operands(self, fields):
 		operands = super().fields_to_operands(fields)
@@ -3377,6 +3419,15 @@ class BitOp4InstructionDesc(BitOpInstructionBase):
 			D[thread] = a | b
 		# Other values of op map to bitop_unary or 10-byte bitop
 	'''
+
+	def get_tt(self, fields):
+		op = fields['op']
+		if op == 2:
+			return (0, 0, 0, 1)
+		if op == 3:
+			return (0, 1, 1, 0)
+		if op == 4:
+			return (0, 1, 1, 1)
 
 	def matches(self, instr):
 		return super().matches(instr) and ((instr >> 16) & 7) in BITOP4_OPS

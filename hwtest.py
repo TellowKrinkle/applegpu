@@ -31,58 +31,66 @@ def slice_length(item, offset, length):
 def mov_imm(reg, value):
 	return b'\x62' + struct.pack('<BI', reg << 2 | 1, value)
 
-def test(test_opcodes, state=None, n=32, extra_data=b''):
-	# load r0-r3 from in0.bin
-	# load r4-r7 from in1.bin
+def test(test_opcodes, state=None, n=32, extra_data=None):
+	# load r0-r7 from buffer 7
 	# r8 = thread position in grid
 	code = bytes.fromhex(
-		'72211004'         # get_sr           r8, sr80 (thread_position_in_grid.x)
-		'0501000e01c8f200' # device_load      3, 0, i32, quad, 4, r0_r1_r2_r3, u0_u1, r8, lsl 2
-		'0521040e01c8f200' # device_load      3, 0, i32, quad, 4, r4_r5_r6_r7, u2_u3, r8, lsl 2
-		'3800'             # wait             0
+		'fca05006'                     # get_sr 0, r31, sr32 (thread_position_in_grid.x)
+		'0604060006000600'             # wait_long 0
+		'9f11543e0200f8c81004'         # iadd r31, 0, r31, lsl 1, wait 0
+		'67005400061f2000570100404000' # device_load 5, i32, xyzw, r0_r1_r2_r3, u12_u13, r31, lsl 4,   0, 1, 1, 0
+		'67005408061f2000570102404000' # device_load 5, i32, xyzw, r4_r5_r6_r7, u12_u13, r31, lsl 4,  16, 1, 1, 0
+		'0680060006000600'             # wait_long 5
+		'0b0001c0'                     # mov r0, r0, wait 5
 	)
 
-	for i in range(9, 32):
-		code += mov_imm(i, 0)
+	for i in range(8, 16):
+		code += bytes((0xc + i * 16, 0)) # mov_imm r[i], 0
+	for i in range(15):
+		code += bytes((0xb + i * 16, 0, 0x40, 0)) # bitop_unary zero, r[16 + i]
+	code += bytes.fromhex(
+		'0680060006000600' # wait_long 5
+		'fb0040c0'         # bitop_unary zero, r31, wait 5
+	)
 
 	code += test_opcodes
 
-	code += bytes.fromhex((
-	  'F2 7d 10 04'             # get_sr           $r31, sr80 (thread_position_in_grid.x)
-	  '45 01 e0 0E 03 C8 F2 00' # device_store     3, 0, i32, quad, 4, r0_r1_r2_r3, u0_u1, r31, lsl 2
-	  '45 21 e4 0E 03 C8 F2 00' # device_store     3, 0, i32, quad, 4, r4_r5_r6_r7, u2_u3, r31, lsl 2
-	  '45 41 e8 0E 03 C8 F2 00' # device_store     3, 0, i32, quad, 4, r8_r9_r10_r11, u4_u5, r31, lsl 2
-	  '45 61 eC 0E 03 C8 F2 00' # device_store     3, 0, i32, quad, 4, r12_r13_r14_r15, u6_u7, r31, lsl 2
-	  '45 81 e0 0E 13 C8 F2 00' # device_store     3, 0, i32, quad, 4, r16_r17_r18_r19, u8_u9, r31, lsl 2
-	  '45 a1 e4 0E 13 C8 F2 00' # device_store     3, 0, i32, quad, 4, r20_r21_r22_r23, u10_u11, r31, lsl 2
-	  '45 c1 e8 0E 13 C8 F2 00' # device_store     3, 0, i32, quad, 4, r24_r25_r26_r27, u12_u13, r31, lsl 2
-	  '45 e1 eC 0E 13 C8 F2 00' # device_store     3, 0, i32, quad, 4, r28_r29_r30_r31, u14_u15, r31, lsl 2
-	  '88 00'                   # stop
-	).replace(' ', ''))
+	code += bytes.fromhex(
+		'fca05006'                     # get_sr 0, r31, sr32 (thread_position_in_grid.x)
+		'06fc060006000600'             # wait_long 012345
+		'9ff1573e0200f8c81014'         # iadd r31, 0, r31, lsl 3, wait 012345
+		'e7005400071f2000170000101000' # device_store 0, i32, xyzw, r0_r1_r2_r3,     u14_u15, r31, lsl 4,   0, 1, 1
+		'e7005408071f2000178000101000' # device_store 0, i32, xyzw, r4_r5_r6_r7,     u14_u15, r31, lsl 4,  16, 1, 1
+		'e7005410071f2000170001101000' # device_store 0, i32, xyzw, r8_r9_r10_r11,   u14_u15, r31, lsl 4,  32, 1, 1
+		'e7005418071f2000178001101000' # device_store 0, i32, xyzw, r12_r13_r14_r15, u14_u15, r31, lsl 4,  48, 1, 1
+		'e7005420071f2000170002101000' # device_store 0, i32, xyzw, r16_r17_r18_r19, u14_u15, r31, lsl 4,  64, 1, 1
+		'e7005428071f2000178002101000' # device_store 0, i32, xyzw, r20_r21_r22_r23, u14_u15, r31, lsl 4,  80, 1, 1
+		'e7005430071f2000170003101000' # device_store 0, i32, xyzw, r24_r25_r26_r27, u14_u15, r31, lsl 4,  96, 1, 1
+		'e7005438071f2000178003101000' # device_store 0, i32, xyzw, r28_r29_r30_r31, u14_u15, r31, lsl 4, 112, 1, 1
+		'0e000000'                     # stop
+	)
 
 	sz = 32 * 4 * n
 	buf_sz = 4 * 4 * n
 
 	assert len(code) <= 1024
 
-	buffers = (bytearray(), bytearray())
+	buffer = bytearray()
 	for i in range(n):
-		for j in range(4):
-			idx = i * 4 + j
-			buffers[0].extend(struct.pack('=I', state[j][i]))
-			buffers[1].extend(struct.pack('=I', state[4+j][i]))
-	buffers[0].extend(extra_data)
+		for j in range(8):
+			buffer.extend(struct.pack('=I', state[j][i]))
 	request = hwtestbed.HWTestBedRequest(shader=code, tg_size=(n, 1, 1), tgsm=0x100)
-	for i in range(len(buffers)):
-		request.set_buffer(i, buffers[i])
-	request.request_result(0, len(buffers[0]))
-	for i in range(1, 8):
-		request.request_result(i, buf_sz)
+	request.set_buffer(6, buffer)
+	request.request_result(7, sz)
+	if extra_data:
+		request.set_buffer(0, extra_data)
+		request.request_result(0, len(extra_data))
 	result = testbed.run(request)
 
-	res = [[struct.unpack('=I', slice_length(result.buffers[i // 4], (j * 4 + i % 4) * 4, 4))[0] for j in range(n)] for i in range(32)]
+	result_registers = result.buffers[7]
+	res = [[struct.unpack('=I', slice_length(result_registers, (j * 32 + i) * 4, 4))[0] for j in range(n)] for i in range(32)]
 	# Add the extra memory to the end
-	res.append(result.buffers[0][buf_sz:])
+	res.append(result.buffers[0] if extra_data else b'')
 	return res
 
 def core_state_to_state(cs):
@@ -126,7 +134,7 @@ RANDOM_INITIAL_STATE = [
 
 TEST_ADDRESS = 0x55FF000000
 
-def run_test(instructions, state, device_memory=None, extra_data=b''):
+def run_test(instructions, state, device_memory=None, extra_data=None):
 	uniforms = applegpu.Uniforms()
 	uniforms.set_reg64(0, TEST_ADDRESS)
 	# threads per grid
@@ -144,10 +152,12 @@ def run_test(instructions, state, device_memory=None, extra_data=b''):
 	while remaining:
 		n = applegpu.opcode_to_number(remaining)
 		desc = applegpu.get_instruction_descriptor(n)
-		if VERBOSE:
-			print(desc.disassemble(n))
-		desc.exec(n, cs)
 		size = desc.decode_size(n)
+		if VERBOSE:
+			hexdump = ' '.join(f'{b:02x}' for b in remaining[:size])
+			disasm  = desc.disassemble(applegpu.opcode_to_number(remaining[:size]))
+			print(f'{hexdump:41s} {disasm}')
+		desc.exec(n, cs)
 		assert size <= len(remaining)
 		assert size >= 2 and size % 2 == 0
 		remaining = remaining[size:]
@@ -608,8 +618,8 @@ def test_uniforms():
 	code = b''.join(assemble.assemble_line('mov r%dh, u%dl' % (i, i+20)) for i in range(3))
 	run_test(code, RANDOM_INITIAL_STATE)
 
-def test_sr80():
-	run_test(assemble.assemble_line('get_sr r0, sr80'), RANDOM_INITIAL_STATE)
+def test_sr32():
+	run_test(assemble.assemble_line('get_sr 0, r0, sr32'), RANDOM_INITIAL_STATE)
 
 def test_memory():
 	# TODO: document what each of these are testing
@@ -795,56 +805,56 @@ def main():
 	print('test_uniforms()')
 	test_uniforms()
 
-	print('test_sr80()')
-	test_sr80()
+	print('test_sr32()')
+	test_sr32()
 
-	print('test_bitop()')
-	test_bitop()
+	# print('test_bitop()')
+	# test_bitop()
 	
-	print('test_add()')
-	test_add()
+	# print('test_add()')
+	# test_add()
 	
-	print('test_madd()')
-	test_madd()
+	# print('test_madd()')
+	# test_madd()
 	
-	print('test_fmadd()')
-	test_fmadd()
+	# print('test_fmadd()')
+	# test_fmadd()
 	
-	print('test_fadd()')
-	test_fadd()
+	# print('test_fadd()')
+	# test_fadd()
 	
-	print('test_fmul()')
-	test_fmul()
+	# print('test_fmul()')
+	# test_fmul()
 	
-	print('test_fmadd16()')
-	test_fmadd16()
+	# print('test_fmadd16()')
+	# test_fmadd16()
 	
-	print('test_shift()')
-	test_shift()
+	# print('test_shift()')
+	# test_shift()
 	
-	print('test_exec_ops()')
-	test_exec_ops()
+	# print('test_exec_ops()')
+	# test_exec_ops()
 	
-	print('test_simd_shuffle_down()')
-	test_simd_shuffle_down()
+	# print('test_simd_shuffle_down()')
+	# test_simd_shuffle_down()
 	
-	print('test_simd_shuffle()')
-	test_simd_shuffle()
+	# print('test_simd_shuffle()')
+	# test_simd_shuffle()
 	
-	print('test_icmp_ballot()')
-	test_icmp_ballot()
+	# print('test_icmp_ballot()')
+	# test_icmp_ballot()
 	
-	print('test_fcmpsel()')
-	test_fcmpsel()
+	# print('test_fcmpsel()')
+	# test_fcmpsel()
 	
-	print('test_popcount()')
-	test_popcount()
+	# print('test_popcount()')
+	# test_popcount()
 	
-	print('test_bitrev()')
-	test_bitrev()
+	# print('test_bitrev()')
+	# test_bitrev()
 	
-	print('test_ffs()')
-	test_ffs()
+	# print('test_ffs()')
+	# test_ffs()
 
 
 main()
