@@ -5614,6 +5614,18 @@ class IfInstructionDesc(ExecMaskInstructionDesc):
 		return super().fields_for_mnem(mnem, operand_strings)
 
 @register
+class ElseInstructionDesc(ExecMaskInstructionDesc):
+	def __init__(self):
+		super().__init__('else', size=4)
+		self.add_constant(0, 12, 0x40f)
+		# TODO: For some reason `else` has 01001 here instead of 10101.
+		#       I've now seen 01001 in both device_load and pop_exec when using control flow.  What does it mean?
+		#       I tried making an `else` with 10101 and it doesn't seem to act any differently...
+		self.add_unsure_constant(18, 5, 0b01001)
+		self.add_operand(CCSrcDesc('A'))
+		self.add_operand(ImmediateDesc('n', 24, 2))
+
+@register
 class WhileInstructionDesc(ExecMaskInstructionDesc):
 	def __init__(self):
 		super().__init__('while', size=4)
