@@ -2961,7 +2961,7 @@ class DeviceStoreInstructionDesc(DeviceLoadStoreInstructionDesc):
 	'''
 
 # Helper superclass for dsts in fixed-length instructions
-class FixedDstDesc(AbstractSrcOperandDesc):
+class FixedDstDesc(AbstractDstOperandDesc):
 	def __init__(self, name, r_off=None, s_off=None, s_size=1, i_off=None):
 		super().__init__(name)
 
@@ -3207,6 +3207,15 @@ class FixedSrcDesc(AbstractSrcOperandDesc):
 				self.encode_imm(fields, imm)
 			else:
 				raise Exception(f'invalid FixedSrcDesc {opstr}')
+
+	def evaluate_thread(self, fields, corestate, thread):
+		r = self.decode(fields)
+
+		value = r.get_thread(corestate, thread)
+		size = r.get_bit_size()
+		if SIGN_EXTEND_FLAG in r.flags:
+			value = sign_extend(value, size)
+		return value
 
 class FixedFloatSrcDesc(FixedSrcDesc):
 	def is_float(self):
@@ -3869,6 +3878,19 @@ class IAddInstructionDescBase(MaskedInstructionDesc):
 				fields[suffix] = suffix in has
 		return fields
 
+	def saturate(self, result, dest_size, signed):
+		if signed:
+			minimum = -(1 << (dest_size-1))
+			maximum = (1 << (dest_size-1)) - 1
+		else:
+			minimum = 0
+			maximum = (1 << dest_size) - 1
+		if result < minimum:
+			result = minimum
+		elif result > maximum:
+			result = maximum
+		return result
+
 
 class IAddSubInstructionDesc(IAddInstructionDescBase):
 
@@ -3929,6 +3951,28 @@ class IAddSubInstructionDesc(IAddInstructionDescBase):
 			return self.is_shifted
 		return True
 
+	def exec_thread(self, instr, corestate, thread):
+		fields = dict(self.decode_fields(instr))
+
+		a = self.operands['A'].evaluate_thread(fields, corestate, thread)
+		b = self.operands['B'].evaluate_thread(fields, corestate, thread)
+		dest_size = self.operands['D'].get_bit_size(fields)
+
+		if self.is_shifted:
+			shift = fields.get('s') or 4
+		else:
+			shift = 0
+
+		result = b << shift
+		if not fields['P']:
+			result = -result
+		result += a
+
+		if fields.get('S', 0):
+			signed = fields['Asx'] or fields['Bsx']
+			result = self.saturate(result, dest_size, signed)
+
+		self.operands['D'].set_thread(fields, corestate, thread, result)
 
 
 class IAddInstructionDesc(IAddSubInstructionDesc):
@@ -4044,6 +4088,19 @@ class IMAddSubInstructionDesc(IAddInstructionDescBase):
 		#self.add_field(77, 1, 'q77')
 
 		self.add_field(7, 1, 'P')
+
+	def exec_thread(self, instr, corestate, thread):
+		fields = dict(self.decode_fields(instr))
+
+		a = self.operands['A'].evaluate_thread(fields, corestate, thread)
+		b = self.operands['B'].evaluate_thread(fields, corestate, thread)
+		c = self.operands['C'].evaluate_thread(fields, corestate, thread)
+		dest_size = self.operands['D'].get_bit_size(fields)
+
+		if not fields['P']:
+			c = -c
+
+		self.operands['D'].set_thread(fields, corestate, thread, a * b + c)
 
 
 class FFMA4InstructionDesc(FMAInstructionDescBase):

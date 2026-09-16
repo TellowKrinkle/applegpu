@@ -214,47 +214,55 @@ def test_bitop():
 							run_test(desc.to_bytes(n), RANDOM_INITIAL_STATE)
 
 def test_add():
-	n = applegpu.opcode_to_number(bytes.fromhex('0e2d46c224002000'))
-	desc = applegpu.get_instruction_descriptor(n)
-	assert desc.decode_remainder(n) == 0
-
-	for S in range(2):
-		n = desc.patch_fields(n, {'S': S})
-		for N in range(2):
-			n = desc.patch_fields(n, {'N': N})
-			for Dt, At, Bt in [(0, 9, 9), (2, 0xD, 1), (2, 9, 9), (2, 9, 9), (2, 9, 0xD), (2, 0xD, 1), (2, 0xD, 0xD), (2, 1, 1), (2, 9, 1), (2, 1, 9)]:
-						n = desc.patch_fields(n, {'Dt': Dt, 'At': At, 'Bt': Bt})
-						for As, Bs in [(0, 0), (0, 1), (1, 0), (1, 1)]:
-							n = desc.patch_fields(n, {'As': As, 'Bs': Bs})
-							for shift in range(8):
-								for (d,a,b) in [(6, 2, 4)]:
-									d_ors = [0,1] if Dt == 2 else [0]
-									for d_or in d_ors:
-										D = (d << 1) | d_or
-										n = desc.patch_fields(n, {'D': D, 'A': (a << 1), 'B': b << 1, 's': shift})
-										run_test(desc.to_bytes(n), RANDOM_INITIAL_STATE)
+	for encoding in ('1f015400020000001105', '1f015400020000001005', '1f015400020000101005'):
+		n = applegpu.opcode_to_number(bytes.fromhex(encoding))
+		base    = encoding == '1f015400020000001105'
+		shifted = encoding == '1f015400020000001005'
+		wide    = encoding == '1f015400020000101005'
+		desc = applegpu.get_instruction_descriptor(n)
+		for sizes in range(9 if wide else 8):
+			if wide:
+				n = desc.patch_fields(n, {'As': sizes % 3, 'Bs': sizes // 3})
+			else:
+				Ds, As, Bs = split_bits(sizes, 3)
+				n = desc.patch_fields(n, {'Ds': Ds, 'As': As, 'Bs': Bs})
+			for params in range(8):
+				Asx, Bsx, P = split_bits(params, 3)
+				n = desc.patch_fields(n, {'P': P, 'Asx': Asx, 'Bsx': Bsx})
+				for nl in range(4):
+					Dl, Al, Bl = (nl > i for i in range(3))
+					for d, a, b in [(6, 2, 4)]:
+						n = desc.patch_fields(n, {'D': d * 2 + Dl, 'A': a * 2 + Al, 'B': b * 2 + Bl})
+						for imm in range(3):
+							aimm, bimm = (imm == i for i in range(1, 3))
+							if aimm and Asx or bimm and Bsx: continue
+							n = desc.patch_fields(n, {'Ar': not aimm, 'Br': not bimm})
+							for extra in range(1 if wide else 4 if shifted else 2):
+								if base:
+									n = desc.patch_fields(n, {'S': extra})
+								elif shifted:
+									n = desc.patch_fields(n, {'s': extra})
+								run_test(desc.to_bytes(n), RANDOM_INITIAL_STATE)
 
 def test_madd():
-	n = applegpu.opcode_to_number(bytes.fromhex('1e2c4fe804504005'))
+	n = applegpu.opcode_to_number(bytes.fromhex('9f0054000200000000202a00'))
 	desc = applegpu.get_instruction_descriptor(n)
-	assert desc.decode_remainder(n) == 0
-
-	for S in [0, 1]:
-		n = desc.patch_fields(n, {'S': S})
-		for N in range(2):
-			n = desc.patch_fields(n, {'N': N})
-			for Dt, At, Bt, Ct in [(2, 0xD, 0xD, 0xD), (2, 9, 0xD, 0xd), (2, 0xD, 1, 9), (2, 9, 9, 9),  (2, 1, 1, 1), (2, 9, 1, 1), (2, 0xD, 9, 0xD)]:
-				n = desc.patch_fields(n, {'Dt': Dt, 'At': At, 'Bt': Bt, 'Ct': Ct})
-				for sss in range(8):
-					As, Bs, Cs = (sss & 1), ((sss >> 1) & 1), ((sss >> 2) & 1)
-					n = desc.patch_fields(n, {'As': As, 'Bs': Bs})
-					for shift in range(8):
-						for (d,a,b,c) in [(6, 0, 2, 4)]:
-							d_ors = [0,1] if Dt == 2 else [0]
-							for d_or in d_ors:
-								D = (d << 1) | d_or
-								n = desc.patch_fields(n, {'D': D, 'A': a << 1, 'B': b << 1, 'C': c << 1, 's': shift})
-								run_test(desc.to_bytes(n), RANDOM_INITIAL_STATE)
+	for sizes in range(24):
+		Ds = sizes % 3
+		As, Bs, Cs = split_bits(sizes // 3, 3)
+		n = desc.patch_fields(n, {'Ds': Ds, 'As': As, 'Bs': Bs, 'Cs': Cs})
+		for params in range(16):
+			Asx, Bsx, Csx, P = split_bits(params, 4)
+			n = desc.patch_fields(n, {'P': P, 'Asx': Asx, 'Bsx': Bsx, 'Csx': Csx})
+			for nl in range(5):
+				Dl, Al, Bl, Cl = (nl > i for i in range(4))
+				for d, a, b, c in [(6, 0, 2, 4)]:
+					n = desc.patch_fields(n, {'D': d * 2 + Dl, 'A': a * 2 + Al, 'B': b * 2 + Bl, 'C': c * 2 + Cl})
+					for imm in range(4):
+						aimm, bimm, cimm = (imm == i for i in range(1, 4))
+						if aimm and Asx or bimm and Bsx or cimm and Csx: continue
+						n = desc.patch_fields(n, {'Ar': not aimm, 'Br': not bimm, 'Cr': not cimm})
+						run_test(desc.to_bytes(n), RANDOM_INITIAL_STATE)
 
 def test_fmadd():
 	n = applegpu.opcode_to_number(bytes.fromhex('3aad5ca2255e0200'))
@@ -843,11 +851,11 @@ def main():
 	print('test_bitop()')
 	test_bitop()
 	
-	# print('test_add()')
-	# test_add()
+	print('test_add()')
+	test_add()
 	
-	# print('test_madd()')
-	# test_madd()
+	print('test_madd()')
+	test_madd()
 	
 	# print('test_fmadd()')
 	# test_fmadd()
