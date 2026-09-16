@@ -390,49 +390,43 @@ def test_hfma():
 
 
 def test_shift():
-	# TODO: rewrite in terms of the new instructions
-	class ShiftInstructionDesc(applegpu.MaskedInstructionDesc):
-		def __init__(self):
-			super().__init__('shift', size=8)
-			self.add_constant(0, 7, 0x2E)
-
-			self.add_operand(applegpu.ImmediateDesc('i0', 15, 1))
-			self.add_operand(applegpu.ImmediateDesc('i1', 26, 2))
-
-			self.add_operand(applegpu.ALUDstDesc('D', 60))
-			self.add_operand(applegpu.ALUSrcDesc('A', 16, 58))
-			self.add_operand(applegpu.ALUSrcDesc('B', 28, 56))
-			self.add_operand(applegpu.ALUSrcDesc('C', 40, 54))
-
-			self.add_operand(applegpu.MaskDesc('m'))
-
-	n = applegpu.opcode_to_number(bytes.fromhex('2e2d00c025460000'))
-	desc = ShiftInstructionDesc()
-	assert desc.decode_remainder(n) == 0, hex(desc.decode_remainder(n))
-	for i in range(32*2):
-		i0 = i & 1
-		i1 = (i >> 1) & 3
-		i2 = i >> 3
-		m = i2 * 4
-		if (i0, i1) == (0, 3):
-			continue
-		n &= ~(1 << 15)
-		n &= ~(3 << 26)
-		n |= i0 << 15
-		n |= i1 << 26
-		n = desc.patch_fields(n, {'m': m})
-		for Dt in [2, 0]:
-			n = desc.patch_fields(n, {'Dt': Dt})
-			for At in [9,1,0]:
-				for Bt in [9,1,0]:
-					for Ct in [9,1,0]:
-						n = desc.patch_fields(n, {'At': At, 'Bt': Bt, 'Ct': Ct})
-						for (d,a,b,c) in [(6, 0, 2, 4)]:
-							d_ors = [0]
-							for d_or in d_ors:
-								D = (d << 1) | d_or
-								n = desc.patch_fields(n, {'D': D, 'A': a << 1, 'B': b << 1, 'C': c << 1})
-								run_test(desc.to_bytes(n), RANDOM_INITIAL_STATE)
+	encodings = (
+		'270054000200000000100000', # bfi
+		'a70054000200000000100000', # bfeil
+		'270154000200000000100000', # extr
+		'270254000200000000100000', # shlhi
+		'a70254000200000000100000', # shrhi
+		'a7015400020000000200',     # asr
+		'a7035400020000000200',     # asrh
+	)
+	masks = (0, 1, 15, 16, 31)
+	for encoding in encodings:
+		nbytes = len(encoding) // 2
+		bitfield = nbytes > 10
+		n = applegpu.opcode_to_number(bytes.fromhex(encoding))
+		desc = applegpu.get_instruction_descriptor(n)
+		for sizes in range(8):
+			Ds, As, Bs = split_bits(sizes, 3)
+			n = desc.patch_fields(n, {'Ds': Ds, 'As': As, 'Bs': Bs})
+			for params in range(2 * len(masks) if bitfield else 2):
+				sx = params & 1
+				if bitfield:
+					n = desc.patch_fields(n, {'Bsx': sx, 'm': masks[params >> 1]})
+				else:
+					n = desc.patch_fields(n, {'Asx': sx})
+				for nl in range(5 if bitfield else 4):
+					Dl, Al, Bl, Cl = (nl > i for i in range(4))
+					for d, a, b, c in [(6, 0, 2, 4)]:
+						n = desc.patch_fields(n, {'D': d * 2 + Dl, 'A': a * 2 + Al, 'B': b * 2 + Bl})
+						if bitfield:
+							n = desc.patch_fields(n, {'C': c * 2 + Cl})
+						for imm in range(4 if bitfield else 3):
+							aimm, bimm, cimm = (imm == i for i in range(1, 4))
+							if (bimm if bitfield else aimm) and sx: continue
+							n = desc.patch_fields(n, {'Ar': not aimm, 'Br': not bimm})
+							if bitfield:
+								n = desc.patch_fields(n, {'Cr': not cimm})
+							run_test(desc.to_bytes(n), RANDOM_INITIAL_STATE)
 
 
 def mov_reg32(dest, src):
@@ -905,8 +899,8 @@ def main():
 	print('test_hfma()')
 	test_hfma()
 	
-	# print('test_shift()')
-	# test_shift()
+	print('test_shift()')
+	test_shift()
 	
 	# print('test_exec_ops()')
 	# test_exec_ops()

@@ -3738,11 +3738,9 @@ class BaseShiftInstructionDesc(MaskedInstructionDesc):
 		a = self.operands['A'].evaluate_thread(fields, corestate, thread)
 		b = self.operands['B'].evaluate_thread(fields, corestate, thread)
 
-		a_size = self.operands['A'].get_bit_size(fields)
-
 		shift_amount = (b & 0x7F)
 
-		result = self.shift_operation(a, a_size, shift_amount)
+		result = self.shift_operation(a, shift_amount)
 
 		self.operands['D'].set_thread(fields, corestate, thread, result)
 
@@ -3756,7 +3754,7 @@ class BaseBitfieldInstructionDesc(MaskedInstructionDesc):
 		self.add_operand(FixedSrcDesc('A', 59, s_off=71, d_off=74, r_off=83))
 		self.add_operand(FixedSrcDesc('B', 41, s_off=69, d_off=72, r_off=80, sx_off=81))
 		self.add_operand(FixedSrcDesc('C', 50, s_off=70, d_off=73, r_off=82))
-		self.add_operand(MaskDesc('mask', 84))
+		self.add_operand(MaskDesc('m', 84))
 		self.add_operand(WaitDesc('W', lo=12, hi=15))
 		self.add_unsure_constant(76, 1, 1)
 		self.add_unsure_constant(18, 5, 0b10101)
@@ -3783,9 +3781,9 @@ class BaseBitfieldInstructionDesc(MaskedInstructionDesc):
 	def exec_thread(self, instr, corestate, thread):
 		fields = dict(self.decode_fields(instr))
 
-		a = self.operands['A'].evaluate_thread(fields, corestate, thread)
-		b = self.operands['B'].evaluate_thread(fields, corestate, thread)
-		c = self.operands['C'].evaluate_thread(fields, corestate, thread)
+		a = self.operands['A'].evaluate_thread(fields, corestate, thread) & 0xFFFFFFFF
+		b = self.operands['B'].evaluate_thread(fields, corestate, thread) & 0xFFFFFFFF
+		c = self.operands['C'].evaluate_thread(fields, corestate, thread) & 0xFFFFFFFF
 		m = fields['m']
 
 		shift_amount = (c & 0x7F)
@@ -3895,11 +3893,11 @@ class ArithmeticShiftRightInstructionDesc(BaseShiftInstructionDesc):
 		super().__init__('asr', 0x1A7)
 
 	pseudocode = BaseShiftInstructionDesc.pseudocode_template.format(
-		expr='result = sign_extend(a, A.thread_bit_size) >> shift_amount'
+		expr='result = sign_extend(a, 32) >> shift_amount'
 	)
 
-	def shift_operation(self, a, a_size, shift_amount):
-		return sign_extend(a, a_size) >> shift_amount
+	def shift_operation(self, a, shift_amount):
+		return sign_extend(a, 32) >> shift_amount
 
 @register
 class ArithmeticShiftRightHighInstructionDesc(BaseShiftInstructionDesc):
@@ -3909,11 +3907,11 @@ class ArithmeticShiftRightHighInstructionDesc(BaseShiftInstructionDesc):
 		super().__init__('asrh', 0x3A7)
 
 	pseudocode = BaseShiftInstructionDesc.pseudocode_template.format(
-		expr='result = (sign_extend(a, A.thread_bit_size) << 32) >> shift_amount'
+		expr='result = (sign_extend(a, 32) << 32) >> shift_amount'
 	)
 
-	def shift_operation(self, a, a_size, shift_amount):
-		return (sign_extend(a, a_size) << 32) >> shift_amount
+	def shift_operation(self, a, shift_amount):
+		return (sign_extend(a, 32) << 32) >> shift_amount
 
 class IAddInstructionDescBase(MaskedInstructionDesc):
 
