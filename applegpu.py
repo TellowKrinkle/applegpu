@@ -3393,7 +3393,7 @@ class BitOp4InstructionDesc(BitOpInstructionBase):
 		tt = ''.join(str(fields['tt' + str(x)]) for x in range(4))
 		mnem = BitOp10InstructionDesc.binary_aliases.get(tt)
 		if mnem is None:
-			return False
+			return None
 		for k, v in BITOP4_OPS.items():
 			if mnem == v:
 				fields = dict(fields)
