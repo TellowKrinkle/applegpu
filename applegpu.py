@@ -4683,7 +4683,7 @@ class HFMA10InstructionDesc(FMAInstructionDescBase):
 		self.add_constant(18, 1, 0b1) # 'L'
 		self.add_constant(33, 1, 0b1)
 
-		self.add_operand(VariableDstDesc('D', fpu_width=16, s_off=None, l_off=3, h_off=60, z_off=66, u_off=54, b_off=70))
+		self.add_operand(VariableDstDesc('D', fpu_width=16, s_off=None, l_off=3, h_off=60, z_off=66, u_off=54))
 		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', fpu_width=16, a_off=80, n_off=65))
 		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', fpu_width=16, a_off=81, n_off=59))
 		self.add_operand(NewFloatSrcDesc('C', 41, common_layout='C', fpu_width=16, q_off=50))
