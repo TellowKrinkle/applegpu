@@ -82,6 +82,7 @@ instruction_lengths = {
 	0x01f: 12, # imsub
 	0x0a7: 12, # bfeil
 	0x2a7: 12, # shrhi
+	0x42f: 12, # pow fixup?
 	0x397: 12, # quad_ballot?
 	0x797: 12, # simd_ballot?
 	0x647: 12, # simd_shuffle_and_fill_up
@@ -133,7 +134,10 @@ def instruction_length(code, offset):
 		else:
 			size = 10
 	elif op == 5: # texture load / sample
-		size = 14
+		if (code[offset + 9] & 0x02) == 0:
+			size = 14
+		else:
+			size = 20
 	elif op == 6:
 		if code[offset] & 0x8:
 			size = 4 # stop
