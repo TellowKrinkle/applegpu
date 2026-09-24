@@ -3073,6 +3073,133 @@ class DeviceStoreInstructionDesc(DeviceLoadStoreInstructionDesc):
 	q0 -> I thought I've seen this unset on stores before but now I can't get it to happen
 	'''
 
+TEXTURE_LOAD_MASK = {
+	0x0: 'x',
+	0x1: 'y',
+	0x2: 'z',
+	0x3: 'w',
+	0x4: 'xw',
+	0x5: 'xy',
+	0x6: 'xyz',
+	0x7: 'xyzw',
+	0x8: 'xz',
+	0x9: 'yz',
+	0xa: 'yw',
+	0xb: 'zw',
+	0xc: 'xzw',
+	0xd: 'xyw',
+	0xe: 'yzw',
+	0xf: '', # TODO: Untested
+}
+
+class TextureRegDesc(AbstractDstOperandDesc):
+	def __init__(self, name):
+		super().__init__(name)
+		self.add_merged_field(self.name, [
+			( 3, 1, self.name + 'l'),
+			( 4, 4, self.name),
+			(22, 2, self.name + 'x'),
+		])
+		self.add_field(15, 1, self.name + 's')
+
+	def decode(self, fields):
+		value = fields[self.name]
+
+		size_bit = fields[self.name + 's']
+
+		count = len(TEXTURE_LOAD_MASK[fields['mask']])
+
+		if size_bit:
+			reg = Reg32
+		else:
+			reg = Reg16
+
+		return RegisterTuple(reg(value + i) for i in range(count))
+
+	def encode_reg(self, fields, reg):
+		s = 1 if isinstance(reg, Reg32) else 0
+
+		fields[self.name] = reg.n
+		fields[self.name + 's'] = s
+
+	def encode_string(self, fields, opstr):
+		regs = try_parse_register_tuple(opstr)
+		if not regs:
+			raise Exception(f'invalid TextureRegDesc {opstr}')
+		reg = regs.get_with_flags(0)
+		self.encode_reg(fields, reg)
+
+class CoordsDesc(AbstractSrcOperandDesc):
+	def __init__(self, name):
+		super().__init__(name)
+		self.add_merged_field(self.name, [
+			( 8, 3, self.name),
+			(24, 3, self.name + 'x')
+		])
+
+	def decode(self, fields):
+		return CoordReg(fields[self.name])
+
+	def encode_string(self, fields, opstr):
+		reg = try_parse_register(opstr)
+		if reg and isinstance(reg, CoordReg):
+			fields[self.name] = reg.n
+		else:
+			raise Exception(f'invalid CoordsDesc {opstr}')
+
+class TextureDesc(AbstractSrcOperandDesc):
+	def __init__(self, name):
+		super().__init__(name)
+		self.add_merged_field(self.name, [
+			(71, 1, self.name + 'l'),
+			(11, 4, self.name),
+			(68, 3, self.name + 'x')
+		])
+
+	def decode(self, fields):
+		return TextureState(fields[self.name])
+
+	def encode_string(self, fields, opstr):
+		reg = try_parse_register(opstr)
+		if reg and isinstance(reg, TextureState):
+			fields[self.name] = reg.n
+		else:
+			raise Exception(f'invalid TextureDesc {opstr}')
+
+class TextureLoadSampleBaseInstructionDesc(MaskedInstructionDesc):
+	def __init__(self, name):
+		super().__init__(name, size=(14, 20), length_bit_pos=73)
+		self.add_constant(0, 3, 5)
+		self.add_operand(ImmediateDesc('g0', 45, 3))
+		self.add_operand(ImmediateDesc('g1', 42, 3))
+		self.add_operand(EnumDesc('mask', [
+			(27, 2, 'm01'),
+			(37, 1, 'm2'),
+			(86, 1, 'm3'),
+		], None, TEXTURE_LOAD_MASK))
+		self.add_operand(TextureRegDesc('R'))
+		self.add_operand(TextureDesc('T'))
+		self.add_operand(CoordsDesc('C'))
+		self.add_operand(ImmediateDesc('q1', 29, 1))
+		self.add_operand(ImmediateDesc('q2', 31, 1))
+		self.add_operand(WaitDesc('W', 39))
+		self.add_unsure_constant(18, 2, 3)
+		self.add_unsure_constant(36, 1, 1)
+		self.add_unsure_constant(96, 1, 1)
+
+@register
+class TextureSampleInstructionDesc(TextureLoadSampleBaseInstructionDesc):
+	def __init__(self):
+		super().__init__('texture_sample')
+		self.add_constant(48, 9, 0x009)
+		self.add_unsure_constant(84, 1, 1)
+
+@register
+class TextureLoadInstructionDesc(TextureLoadSampleBaseInstructionDesc):
+	def __init__(self):
+		super().__init__('texture_load')
+		self.add_constant(48, 9, 0x117)
+
 # Helper superclass for dsts in fixed-length instructions
 class FixedDstDesc(AbstractDstOperandDesc):
 	def __init__(self, name, r_off=None, s_off=None, s_size=1, i_off=None, t_off=None, v_off=None, w_off=None):
