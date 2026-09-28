@@ -2368,6 +2368,10 @@ class MemoryShiftDesc(OperandDesc):
 			raise Exception('invalid MemoryShiftDesc %r' % (opstr,))
 		fields[self.name] = 0 if s == 4 else s + 1
 
+	def encode_insert_optional_default(self, opstr):
+		if not opstr.startswith('lsl '):
+			return 'lsl 0'
+
 
 @document_operand
 class MemoryIndexDesc(OperandDesc):
@@ -2486,6 +2490,7 @@ class MemoryIndexDesc(OperandDesc):
 			fields[self.name + 'x'] = (v >> 10) & 15
 			fields[self.name + 's'] = (v >> 14) & 1
 			fields[self.name + 'h'] = (v >> 15) & 1
+			fields[self.name + 'sx'] = 0
 			return
 
 		raise Exception('invalid MemoryIndexDesc %r' % (opstr,))
