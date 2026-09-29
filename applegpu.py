@@ -189,7 +189,8 @@ class BaseReg(Register):
 
 class Reg16(BaseReg):
 	def __str__(self):
-		return self._str(reg16_names)
+		lh = 'h' if self.n & 1 else 'l'
+		return _add_flags(f'r{self.n>>1}{lh}', self.flags)
 
 	def __repr__(self):
 		return self._repr('Reg16')
@@ -205,7 +206,7 @@ class Reg16(BaseReg):
 
 class Reg32(BaseReg):
 	def __str__(self):
-		return self._str(reg32_names)
+		return _add_flags(f'r{self.n}', self.flags)
 
 	def __repr__(self):
 		return self._repr('Reg32')
@@ -221,7 +222,7 @@ class Reg32(BaseReg):
 
 class Reg64(BaseReg):
 	def __str__(self):
-		return self._str(reg64_names)
+		return _add_flags(f'r{self.n}_r{self.n+1}', self.flags)
 
 	def __repr__(self):
 		return self._repr('Reg64')
@@ -240,7 +241,8 @@ class BaseUReg(Register):
 
 class UReg16(BaseUReg):
 	def __str__(self):
-		return self._str(ureg16_names)
+		lh = 'h' if self.n & 1 else 'l'
+		return _add_flags(f'u{self.n>>1}{lh}', self.flags)
 
 	def __repr__(self):
 		return self._repr('UReg16')
@@ -253,7 +255,7 @@ class UReg16(BaseUReg):
 
 class UReg32(BaseUReg):
 	def __str__(self):
-		return self._str(ureg32_names)
+		return _add_flags(f'u{self.n}', self.flags)
 
 	def __repr__(self):
 		return self._repr('UReg32')
@@ -266,7 +268,7 @@ class UReg32(BaseUReg):
 
 class UReg64(BaseUReg):
 	def __str__(self):
-		return self._str(ureg64_names)
+		return _add_flags(f'u{self.n}_u{self.n+1}', self.flags)
 
 	def __repr__(self):
 		return self._repr('UReg64')
@@ -345,27 +347,6 @@ class CoordReg(Register):
 	def get_bit_size(self):
 		return 32
 
-ureg16_names = []
-ureg32_names = []
-ureg64_names = []
-
-for _i in range(16384):
-	ureg16_names.append('u%dl' % _i)
-	ureg16_names.append('u%dh' % _i)
-	ureg32_names.append('u%d' % _i)
-	ureg64_names.append('u%d_u%d' % (_i, _i + 1))
-
-reg16_names = []
-reg32_names = []
-reg64_names = []
-for _i in range(65536):
-	reg16_names.append('r%dl' % _i)
-	reg16_names.append('r%dh' % _i)
-	reg32_names.append('r%d' % _i)
-	# TODO: limit? can cross r31-r32 boundary?
-	reg64_names.append('r%d_r%d' % (_i, _i + 1))
-
-
 # TODO: is this the right number?
 ts_names = []
 ss_names = []
@@ -380,12 +361,6 @@ for _i in range(256):
 registers_by_name = {}
 
 for _namelist, _c in [
-	(reg16_names, Reg16),
-	(reg32_names, Reg32),
-	(reg64_names, Reg64),
-	(ureg16_names, UReg16),
-	(ureg32_names, UReg32),
-	(ureg64_names, UReg64),
 	(ts_names, TextureState),
 	(ss_names, SamplerState),
 	(cf_names, CF),
@@ -396,20 +371,46 @@ for _namelist, _c in [
 		registers_by_name[_name] = (_c, _i)
 
 
+def try_parse_gpr_ureg(s):
+	s, _, upper = s.partition('_')
+	lh = s[-1]
+	if lh == 'l' or lh == 'h':
+		s = s[:-1]
+	else:
+		lh = None
+	prefix = s[0]
+	if prefix != 'r' and prefix != 'u':
+		return (None, 0)
+	try:
+		value = int(s[1:], 10)
+	except ValueError:
+		return (None, 0)
+	if lh is not None:
+		if upper:
+			return (None, 0)
+		value = (value << 1) + (1 if lh == 'h' else 0)
+		return (Reg16 if prefix == 'r' else UReg16, value)
+	if upper:
+		if upper != f'{s[0]}{value+1}':
+			return (None, 0)
+		return (Reg64 if prefix == 'r' else UReg64, value)
+	return (Reg32 if prefix == 'r' else UReg32, value)
+
 def try_parse_register(s):
 	flags = []
 	if s.startswith(CACHE_HINT):
 		s = s[1:]
 		flags.append(CACHE_FLAG)
 	parts = s.split('.')
-	if parts[0] not in registers_by_name:
-		return None
+	c, n = try_parse_gpr_ureg(parts[0])
+	if not c:
+		if parts[0] not in registers_by_name:
+			return None
+		c, n = registers_by_name[parts[0]]
 	for i in parts[1:]:
 		if i not in OPERAND_FLAGS:
 			return None
 		flags.append(i)
-
-	c, n = registers_by_name[parts[0]]
 
 	return c(n, flags=flags)
 
