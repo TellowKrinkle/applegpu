@@ -17,8 +17,6 @@ def read_shader_archive(archiveName):
 			output.append((shaderType, shader))
 	return output
 
-import hexdump
-
 if __name__ == '__main__':
 	if not os.path.exists(compileTool):
 		subprocess.run(['make', '-C', toolsDir])
