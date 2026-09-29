@@ -5,6 +5,7 @@ from srgb import SRGB_TABLE
 
 MAX_OPCODE_LEN = 16
 
+L1_FLAG = 'l1'
 BFLOAT_FLAG = 'bfloat'
 ABS_FLAG = 'abs'
 NEGATE_FLAG = 'neg'
@@ -14,6 +15,7 @@ CACHE_FLAG = 'cache'
 DISCARD_FLAG = 'discard'
 
 OPERAND_FLAGS = [
+	L1_FLAG,
 	BFLOAT_FLAG,
 	ABS_FLAG,
 	NEGATE_FLAG,
@@ -898,7 +900,7 @@ def add_float_modifier(r, modifier):
 class OptionalGroupDesc(OperandDesc):
 	def decode(self, fields):
 		value = fields.get(self.name, 0)
-		if not value and not self.is_cr(fields):
+		if not value and not self.group_enabled(fields):
 			return ''
 		else:
 			return f'group {value}'
@@ -921,8 +923,10 @@ class VariableOptionalGroupDesc(OptionalGroupDesc):
 		if offset is not None:
 			self.add_field(offset, 3, self.name)
 
-	def is_cr(self, fields):
-		return fields.get(self.dst_name + 'u', False) and fields.get(self.dst_name + 'c', False)
+	def group_enabled(self, fields):
+		is_cr = fields.get(self.dst_name + 'u', False) and fields.get(self.dst_name + 'c', False)
+		is_l1 = fields.get(self.dst_name + 'w', False)
+		return is_cr or is_l1
 
 class FixedOptionalGroupDesc(OptionalGroupDesc):
 	def __init__(self, name, offset=None, dst_name='D'):
@@ -934,7 +938,7 @@ class FixedOptionalGroupDesc(OptionalGroupDesc):
 				(offset + 2, 2, self.name + 'h'),
 			])
 
-	def is_cr(self, fields):
+	def group_enabled(self, fields):
 		return not fields.get(self.dst_name + 't', 1)
 
 class WaitDesc(OperandDesc):
@@ -1338,7 +1342,7 @@ class EvaluateThreadFloat: # FMA4 needs to be able to read dst registers
 class VariableDstDesc(AbstractDstOperandDesc, EvaluateThreadFloat):
 	def get_size(self, fields):
 		return fields.get(self.name + 's', 1 if self.fpu_width == 32 else 0)
-	def __init__(self, name, bit_off=4, fpu_width=32, l_off=None, x_off=22, h_off=None, z_off=None, s_off=3, c_off=21, u_off=None, b_off=None):
+	def __init__(self, name, bit_off=4, fpu_width=32, l_off=None, x_off=22, h_off=None, z_off=None, s_off=3, c_off=21, u_off=None, w_off=None, b_off=None):
 		super().__init__(name)
 		self.fpu_width = fpu_width
 		self.value_shift = 1 if l_off is None else 0
@@ -1358,6 +1362,8 @@ class VariableDstDesc(AbstractDstOperandDesc, EvaluateThreadFloat):
 			self.add_field(c_off, 1, self.name + 'c') # cache
 		if u_off is not None:
 			self.add_field(u_off, 1, self.name + 'u') # is uniform
+		if w_off is not None:
+			self.add_field(w_off, 1, self.name + 'w') # write through to L1
 		if z_off is not None:
 			self.add_field(z_off, 1, self.name + 'z') # high part of uniform
 		if b_off is not None:
@@ -1367,6 +1373,7 @@ class VariableDstDesc(AbstractDstOperandDesc, EvaluateThreadFloat):
 		value = fields[self.name] << self.value_shift
 
 		uniform_bit = fields.get(self.name + 'u', 0) # is uniform
+		l1_bit = fields.get(self.name + 'w', 0) # is l1 writethrough
 		size_bit = self.get_size(fields) # is 32-bit
 		cache_bit = fields.get(self.name + 'c', 0) # TODO: What is it implicitly in MovImm7?
 		bf_bit = fields.get(self.name + 'b', 0)
@@ -1388,6 +1395,8 @@ class VariableDstDesc(AbstractDstOperandDesc, EvaluateThreadFloat):
 			else:
 				r = Reg16(value)
 
+		if l1_bit:
+			r.flags.append(L1_FLAG)
 		# bfloat + size decodes as 16-bit non-bfloat
 		if bf_bit and not size_bit:
 			r.flags.append(BFLOAT_FLAG)
@@ -1415,6 +1424,7 @@ class VariableDstDesc(AbstractDstOperandDesc, EvaluateThreadFloat):
 		fields[self.name + 's'] = s
 		fields[self.name + 'z'] = value >> 8
 		fields[self.name + 'b'] = BFLOAT_FLAG in reg.flags
+		fields[self.name + 'w'] = L1_FLAG in reg.flags
 
 	def encode_string(self, fields, opstr):
 		reg = try_parse_register(opstr)
@@ -3841,7 +3851,7 @@ class BitOp10InstructionDesc(BitOpInstructionBase):
 		super().__init__(size=10)
 		self.add_constant(17, 2, 0b11)
 		self.add_operand(TruthTableDesc('tt'))
-		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38, z_off=50))
+		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38, w_off=37, z_off=50))
 		self.add_operand(BitOpSrcDesc('A',  9, common_layout='A', l_off=35))
 		self.add_operand(BitOpSrcDesc('B', 25, common_layout='B', l_off=36))
 		self.add_operand(VariableOptionalGroupDesc('g', 58))
