@@ -349,7 +349,7 @@ ureg16_names = []
 ureg32_names = []
 ureg64_names = []
 
-for _i in range(256):
+for _i in range(16384):
 	ureg16_names.append('u%dl' % _i)
 	ureg16_names.append('u%dh' % _i)
 	ureg32_names.append('u%d' % _i)
@@ -358,16 +358,12 @@ for _i in range(256):
 reg16_names = []
 reg32_names = []
 reg64_names = []
-reg96_names = []
-reg128_names = []
-for _i in range(128):
+for _i in range(65536):
 	reg16_names.append('r%dl' % _i)
 	reg16_names.append('r%dh' % _i)
 	reg32_names.append('r%d' % _i)
 	# TODO: limit? can cross r31-r32 boundary?
 	reg64_names.append('r%d_r%d' % (_i, _i + 1))
-	reg96_names.append('r%d_r%d_r%d' % (_i, _i + 1, _i + 2))
-	reg128_names.append('r%d_r%d_r%d_r%d' % (_i, _i + 1, _i + 2, _i + 3))
 
 
 # TODO: is this the right number?
@@ -1342,7 +1338,7 @@ class EvaluateThreadFloat: # FMA4 needs to be able to read dst registers
 class VariableDstDesc(AbstractDstOperandDesc, EvaluateThreadFloat):
 	def get_size(self, fields):
 		return fields.get(self.name + 's', 1 if self.fpu_width == 32 else 0)
-	def __init__(self, name, bit_off=4, fpu_width=32, l_off=None, x_off=22, h_off=None, z_off=None, s_off=3, c_off=21, u_off=None, w_off=None, b_off=None):
+	def __init__(self, name, bit_off=4, fpu_width=32, l_off=None, x_off=22, h_off=None, j_off=None, y_off=None, z_off=None, s_off=3, c_off=21, u_off=None, w_off=None, b_off=None):
 		super().__init__(name)
 		self.fpu_width = fpu_width
 		self.value_shift = 1 if l_off is None else 0
@@ -1353,6 +1349,12 @@ class VariableDstDesc(AbstractDstOperandDesc, EvaluateThreadFloat):
 			main_fields.append((x_off, 2, self.name + 'x'))
 		if h_off is not None:
 			main_fields.append((h_off, 1, self.name + 'h'))
+		if j_off is not None:
+			main_fields.append((j_off, 4, self.name + 'j'))
+		if y_off is not None:
+			main_fields.append((y_off, 2, self.name + 'y'))
+		if z_off is not None:
+			main_fields.append((z_off, 1, self.name + 'z'))
 		self.add_merged_field(self.name, main_fields)
 		if s_off is not None:
 			self.add_field(s_off, 1, self.name + 's') # size
@@ -1364,8 +1366,6 @@ class VariableDstDesc(AbstractDstOperandDesc, EvaluateThreadFloat):
 			self.add_field(u_off, 1, self.name + 'u') # is uniform
 		if w_off is not None:
 			self.add_field(w_off, 1, self.name + 'w') # write through to L1
-		if z_off is not None:
-			self.add_field(z_off, 1, self.name + 'z') # high part of uniform
 		if b_off is not None:
 			self.add_field(b_off, 1, self.name + 'b') # bfloat
 
@@ -1378,10 +1378,7 @@ class VariableDstDesc(AbstractDstOperandDesc, EvaluateThreadFloat):
 		cache_bit = fields.get(self.name + 'c', 0) # TODO: What is it implicitly in MovImm7?
 		bf_bit = fields.get(self.name + 'b', 0)
 
-		high_uniform_bit = fields.get(self.name + 'z', 0)
-
-		if uniform_bit:
-			value |= high_uniform_bit << 8
+		if uniform_bit and not l1_bit:
 			if cache_bit:
 				return CoordReg(value >> 1)
 			else:
@@ -1390,6 +1387,9 @@ class VariableDstDesc(AbstractDstOperandDesc, EvaluateThreadFloat):
 				else:
 					r = UReg16(value)
 		else:
+			if l1_bit:
+				value |= uniform_bit << 15
+				value |= cache_bit << 16
 			if size_bit and not bf_bit:
 				r = Reg32(value >> 1)
 			else:
@@ -1400,7 +1400,7 @@ class VariableDstDesc(AbstractDstOperandDesc, EvaluateThreadFloat):
 		# bfloat + size decodes as 16-bit non-bfloat
 		if bf_bit and not size_bit:
 			r.flags.append(BFLOAT_FLAG)
-		if cache_bit:
+		if cache_bit and not l1_bit:
 			r.flags.append(CACHE_FLAG)
 
 		return r
@@ -1411,18 +1411,21 @@ class VariableDstDesc(AbstractDstOperandDesc, EvaluateThreadFloat):
 		r16 = isinstance(reg, Reg16)
 		r32 = isinstance(reg, Reg32)
 		cr  = isinstance(reg, CoordReg)
-		u = u16 or u32
+		u = u16 or u32 or cr
 		s = u32 or r32 or cr
+		c = CACHE_FLAG in reg.flags or cr
 		value = reg.n
 		if s:
 			value <<= 1
 		if ((value >> self.value_shift) << self.value_shift) != value:
 			raise Exception(f'Register {reg} must be 32-bit aligned')
-		fields[self.name] = (value & 0xff) >> self.value_shift
-		fields[self.name + 'c'] = CACHE_FLAG in reg.flags or cr
-		fields[self.name + 'u'] = u or cr
+		if L1_FLAG in reg.flags:
+			u = (value >> 15) & 1
+			c = (value >> 16) & 1
+		fields[self.name] = (value & 0xfff) >> self.value_shift
+		fields[self.name + 'c'] = c
+		fields[self.name + 'u'] = u
 		fields[self.name + 's'] = s
-		fields[self.name + 'z'] = value >> 8
 		fields[self.name + 'b'] = BFLOAT_FLAG in reg.flags
 		fields[self.name + 'w'] = L1_FLAG in reg.flags
 
@@ -3851,7 +3854,7 @@ class BitOp10InstructionDesc(BitOpInstructionBase):
 		super().__init__(size=10)
 		self.add_constant(17, 2, 0b11)
 		self.add_operand(TruthTableDesc('tt'))
-		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38, w_off=37, z_off=50))
+		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38, w_off=37, j_off=50, y_off=67, z_off=76))
 		self.add_operand(BitOpSrcDesc('A',  9, common_layout='A', l_off=35))
 		self.add_operand(BitOpSrcDesc('B', 25, common_layout='B', l_off=36))
 		self.add_operand(VariableOptionalGroupDesc('g', 58))
@@ -4565,7 +4568,7 @@ class FFMA10InstructionDesc(FMAInstructionDescBase):
 		self.add_constant(18, 1, 0b1) # 'L'
 		self.add_constant(33, 1, 0b1)
 
-		self.add_operand(VariableDstDesc('D', l_off=50, h_off=60, z_off=66, u_off=54, b_off=70))
+		self.add_operand(VariableDstDesc('D', l_off=50, h_off=60, j_off=66, u_off=54, b_off=70))
 		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', a_off=80, b_off=71, n_off=65))
 		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', a_off=81, b_off=72, n_off=59))
 		self.add_operand(NewFloatSrcDesc('C', 41, common_layout='C', s_off=49, b_off=34))
@@ -4655,7 +4658,7 @@ class FMulAdd8InstructionDescBase(FMAInstructionDescBase):
 		self.add_constant(18, 1, 0b1) # 'L'
 		self.add_constant(32, 2, 0b01)
 
-		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38, z_off=50, b_off=54))
+		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38, j_off=50, b_off=54))
 		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', l_off=35, n_off=49, b_off=55))
 		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', l_off=36, n_off=43, b_off=56))
 
@@ -4671,7 +4674,7 @@ class FMulAdd10InstructionDescBase(FMAInstructionDescBase):
 		self.add_constant(18, 1, 0b1) # 'L'
 		self.add_constant(32, 2, 0b10)
 
-		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38, z_off=50, b_off=54))
+		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38, j_off=50, b_off=54))
 		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', l_off=35, n_off=49, b_off=55, a_off=64))
 		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', l_off=36, n_off=43, b_off=56, a_off=65))
 
@@ -4926,7 +4929,7 @@ class HFMA10InstructionDesc(FMAInstructionDescBase):
 		self.add_constant(18, 1, 0b1) # 'L'
 		self.add_constant(33, 1, 0b1)
 
-		self.add_operand(VariableDstDesc('D', fpu_width=16, s_off=None, l_off=3, h_off=60, z_off=66, u_off=54))
+		self.add_operand(VariableDstDesc('D', fpu_width=16, s_off=None, l_off=3, h_off=60, j_off=66, u_off=54))
 		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', fpu_width=16, a_off=80, n_off=65))
 		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', fpu_width=16, a_off=81, n_off=59))
 		self.add_operand(NewFloatSrcDesc('C', 41, common_layout='C', fpu_width=16, q_off=50))
@@ -5004,7 +5007,7 @@ class HMulAdd8InstructionDescBase(FMAInstructionDescBase):
 		self.add_constant(18, 1, 0b1) # 'L'
 		self.add_constant(32, 2, 0b01)
 
-		self.add_operand(VariableDstDesc('D', fpu_width=16, s_off=None, l_off=3, h_off=44, u_off=38, z_off=50))
+		self.add_operand(VariableDstDesc('D', fpu_width=16, s_off=None, l_off=3, h_off=44, u_off=38, j_off=50))
 		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', fpu_width=16, q_off=35, n_off=49))
 		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', fpu_width=16, q_off=36, n_off=43))
 
@@ -5019,7 +5022,7 @@ class HMulAdd10InstructionDescBase(FMAInstructionDescBase):
 		self.add_constant(18, 1, 0b1) # 'L'
 		self.add_constant(32, 2, 0b10)
 
-		self.add_operand(VariableDstDesc('D', fpu_width=16, s_off=None, l_off=3, h_off=44, u_off=38, z_off=50))
+		self.add_operand(VariableDstDesc('D', fpu_width=16, s_off=None, l_off=3, h_off=44, u_off=38, j_off=50))
 		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', fpu_width=16, q_off=35, n_off=49, a_off=64))
 		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', fpu_width=16, q_off=36, n_off=43, a_off=65))
 
@@ -5545,7 +5548,7 @@ class CmpSel14InstructionDesc(CmpSelInstructionBase):
 			(48, 3, 'cc'),
 			(34, 1, 'ccx'),
 		], None, CMPSEL_CC))
-		self.add_operand(VariableDstDesc('D', l_off=3, s_off=17, u_off=54, h_off=60, z_off=82))
+		self.add_operand(VariableDstDesc('D', l_off=3, s_off=17, u_off=54, h_off=60, j_off=82))
 		self.add_operand(CmpSrcDesc('A',  9, common_layout='A', a_off=96, b_off=87, n_off=65))
 		self.add_operand(CmpSrcDesc('B', 25, common_layout='B', a_off=97, b_off=88, n_off=59))
 		self.add_operand(SelSrcDesc('X', 41, common_layout='X'))
