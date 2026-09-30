@@ -5,7 +5,6 @@ from srgb import SRGB_TABLE
 
 MAX_OPCODE_LEN = 16
 
-L1_FLAG = 'l1'
 BFLOAT_FLAG = 'bfloat'
 ABS_FLAG = 'abs'
 NEGATE_FLAG = 'neg'
@@ -15,7 +14,6 @@ CACHE_FLAG = 'cache'
 DISCARD_FLAG = 'discard'
 
 OPERAND_FLAGS = [
-	L1_FLAG,
 	BFLOAT_FLAG,
 	ABS_FLAG,
 	NEGATE_FLAG,
@@ -279,6 +277,36 @@ class UReg64(BaseUReg):
 	def get_bit_size(self):
 		return 64
 
+class BaseStackReg(Register):
+	pass
+
+class StackReg16(BaseStackReg):
+	def __str__(self):
+		lh = 'h' if self.n & 1 else 'l'
+		return _add_flags(f'st{self.n>>1}{lh}', self.flags)
+
+	def __repr__(self):
+		return self._repr('StackReg16')
+
+	def get_thread(self, corestate, thread):
+		raise Exception('Unimplemented stack register read')
+
+	def get_bit_size(self):
+		return 16
+
+class StackReg32(BaseUReg):
+	def __str__(self):
+		return _add_flags(f'st{self.n}', self.flags)
+
+	def __repr__(self):
+		return self._repr('StackReg32')
+
+	def get_thread(self, corestate, thread):
+		raise Exception('Unimplemented stack register read')
+
+	def get_bit_size(self):
+		return 32
+
 class SReg32(Register):
 	def __str__(self):
 		name = 'sr%d' % (self.n)
@@ -378,23 +406,31 @@ def try_parse_gpr_ureg(s):
 		s = s[:-1]
 	else:
 		lh = None
-	prefix = s[0]
-	if prefix != 'r' and prefix != 'u':
+	if s.startswith('st'):
+		prefix_len = 2
+		types = (StackReg16, StackReg32)
+	elif s.startswith('r'):
+		prefix_len = 1
+		types = (Reg16, Reg32, Reg64)
+	elif s.startswith('u'):
+		prefix_len = 1
+		types = (UReg16, UReg32, UReg64)
+	else:
 		return (None, 0)
 	try:
-		value = int(s[1:], 10)
+		value = int(s[prefix_len:], 10)
 	except ValueError:
 		return (None, 0)
 	if lh is not None:
 		if upper:
 			return (None, 0)
 		value = (value << 1) + (1 if lh == 'h' else 0)
-		return (Reg16 if prefix == 'r' else UReg16, value)
+		return (types[0], value)
 	if upper:
-		if upper != f'{s[0]}{value+1}':
+		if upper != f'{s[:prefix_len]}{value+1}':
 			return (None, 0)
-		return (Reg64 if prefix == 'r' else UReg64, value)
-	return (Reg32 if prefix == 'r' else UReg32, value)
+		return (types[2], value)
+	return (types[1], value)
 
 def try_parse_register(s):
 	flags = []
@@ -922,8 +958,8 @@ class VariableOptionalGroupDesc(OptionalGroupDesc):
 
 	def group_enabled(self, fields):
 		is_cr = fields.get(self.dst_name + 'u', False) and fields.get(self.dst_name + 'c', False)
-		is_l1 = fields.get(self.dst_name + 'w', False)
-		return is_cr or is_l1
+		is_st = fields.get(self.dst_name + 'k', False)
+		return is_cr or is_st
 
 class FixedOptionalGroupDesc(OptionalGroupDesc):
 	def __init__(self, name, offset=None, dst_name='D'):
@@ -1339,7 +1375,7 @@ class EvaluateThreadFloat: # FMA4 needs to be able to read dst registers
 class VariableDstDesc(AbstractDstOperandDesc, EvaluateThreadFloat):
 	def get_size(self, fields):
 		return fields.get(self.name + 's', 1 if self.fpu_width == 32 else 0)
-	def __init__(self, name, bit_off=4, fpu_width=32, l_off=None, x_off=22, h_off=None, j_off=None, y_off=None, z_off=None, s_off=3, c_off=21, u_off=None, w_off=None, b_off=None):
+	def __init__(self, name, bit_off=4, fpu_width=32, l_off=None, x_off=22, h_off=None, j_off=None, y_off=None, z_off=None, s_off=3, c_off=21, u_off=None, k_off=None, b_off=None):
 		super().__init__(name)
 		self.fpu_width = fpu_width
 		self.value_shift = 1 if l_off is None else 0
@@ -1365,8 +1401,8 @@ class VariableDstDesc(AbstractDstOperandDesc, EvaluateThreadFloat):
 			self.add_field(c_off, 1, self.name + 'c') # cache
 		if u_off is not None:
 			self.add_field(u_off, 1, self.name + 'u') # is uniform
-		if w_off is not None:
-			self.add_field(w_off, 1, self.name + 'w') # write through to L1
+		if k_off is not None:
+			self.add_field(k_off, 1, self.name + 'k') # is stack
 		if b_off is not None:
 			self.add_field(b_off, 1, self.name + 'b') # bfloat
 
@@ -1374,12 +1410,19 @@ class VariableDstDesc(AbstractDstOperandDesc, EvaluateThreadFloat):
 		value = fields[self.name] << self.value_shift
 
 		uniform_bit = fields.get(self.name + 'u', 0) # is uniform
-		l1_bit = fields.get(self.name + 'w', 0) # is l1 writethrough
+		stack_bit = fields.get(self.name + 'k', 0) # is stack
 		size_bit = self.get_size(fields) # is 32-bit
 		cache_bit = fields.get(self.name + 'c', 0) # TODO: What is it implicitly in MovImm7?
 		bf_bit = fields.get(self.name + 'b', 0)
 
-		if uniform_bit and not l1_bit:
+		if stack_bit:
+			value |= uniform_bit << 15
+			value |= cache_bit << 16
+			if size_bit and not bf_bit:
+				r = StackReg32(value >> 1)
+			else:
+				r = StackReg16(value)
+		elif uniform_bit:
 			if cache_bit:
 				return CoordReg(value >> 1)
 			else:
@@ -1388,20 +1431,15 @@ class VariableDstDesc(AbstractDstOperandDesc, EvaluateThreadFloat):
 				else:
 					r = UReg16(value)
 		else:
-			if l1_bit:
-				value |= uniform_bit << 15
-				value |= cache_bit << 16
 			if size_bit and not bf_bit:
 				r = Reg32(value >> 1)
 			else:
 				r = Reg16(value)
 
-		if l1_bit:
-			r.flags.append(L1_FLAG)
 		# bfloat + size decodes as 16-bit non-bfloat
 		if bf_bit and not size_bit:
 			r.flags.append(BFLOAT_FLAG)
-		if cache_bit and not l1_bit:
+		if cache_bit and not stack_bit:
 			r.flags.append(CACHE_FLAG)
 
 		return r
@@ -1411,16 +1449,19 @@ class VariableDstDesc(AbstractDstOperandDesc, EvaluateThreadFloat):
 		u32 = isinstance(reg, UReg32)
 		r16 = isinstance(reg, Reg16)
 		r32 = isinstance(reg, Reg32)
+		st16 = isinstance(reg, StackReg16)
+		st32 = isinstance(reg, StackReg32)
 		cr  = isinstance(reg, CoordReg)
+		k = st16 or st32
 		u = u16 or u32 or cr
-		s = u32 or r32 or cr
+		s = u32 or r32 or st32 or cr
 		c = CACHE_FLAG in reg.flags or cr
 		value = reg.n
 		if s:
 			value <<= 1
 		if ((value >> self.value_shift) << self.value_shift) != value:
 			raise Exception(f'Register {reg} must be 32-bit aligned')
-		if L1_FLAG in reg.flags:
+		if k:
 			u = (value >> 15) & 1
 			c = (value >> 16) & 1
 		fields[self.name] = (value & 0xfff) >> self.value_shift
@@ -1428,7 +1469,7 @@ class VariableDstDesc(AbstractDstOperandDesc, EvaluateThreadFloat):
 		fields[self.name + 'u'] = u
 		fields[self.name + 's'] = s
 		fields[self.name + 'b'] = BFLOAT_FLAG in reg.flags
-		fields[self.name + 'w'] = L1_FLAG in reg.flags
+		fields[self.name + 'k'] = k
 
 	def encode_string(self, fields, opstr):
 		reg = try_parse_register(opstr)
@@ -3855,7 +3896,7 @@ class BitOp10InstructionDesc(BitOpInstructionBase):
 		super().__init__(size=10)
 		self.add_constant(17, 2, 0b11)
 		self.add_operand(TruthTableDesc('tt'))
-		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38, w_off=37, j_off=50, y_off=67, z_off=76))
+		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38, k_off=37, j_off=50, y_off=67, z_off=76))
 		self.add_operand(BitOpSrcDesc('A',  9, common_layout='A', l_off=35))
 		self.add_operand(BitOpSrcDesc('B', 25, common_layout='B', l_off=36))
 		self.add_operand(VariableOptionalGroupDesc('g', 58))
