@@ -179,23 +179,26 @@ def disassemble(code, code_offset = 0):
 			else:
 				skipping = False
 		for o in applegpu.instruction_descriptors:
-			if o.matches(n):
-				mnem = o.decode_mnem(n)
-				if o.decode_size(n) != length:
-					print(f"Length mismatch (expected {length}, got {o.decode_size(n)})")
-				asm = str(o.disassemble(n, pc = p + code_offset))
-				if VERBOSE:
-					asm = asm.ljust(60) + '\t'
-					fields = '[' + ', '.join('%s=%r' % i for i in o.decode_fields(n)) + ']'
-					rem = o.decode_remainder(n)
-					if rem:
-						fields = fields.ljust(85) + ' ' + str(rem)
-					asm += fields
-				print('%4x:' % (p + code_offset), hex(code[p:p+length]).ljust(42), asm)
-				if mnem == 'stop':
-					if STOP_ON_STOP:
-						end = True
-				break
+			try:
+				if o.matches(n):
+					mnem = o.decode_mnem(n)
+					if o.decode_size(n) != length:
+						print(f"Length mismatch (expected {length}, got {o.decode_size(n)})")
+					asm = str(o.disassemble(n, pc = p + code_offset))
+					if VERBOSE:
+						asm = asm.ljust(60) + '\t'
+						fields = '[' + ', '.join('%s=%r' % i for i in o.decode_fields(n)) + ']'
+						rem = o.decode_remainder(n)
+						if rem:
+							fields = fields.ljust(85) + ' ' + str(rem)
+						asm += fields
+					print('%4x:' % (p + code_offset), hex(code[p:p+length]).ljust(42), asm)
+					if mnem == 'stop':
+						if STOP_ON_STOP:
+							end = True
+					break
+			except Exception as e:
+				print('%4x:' % (p + code_offset), hex(code[p:p+length]).ljust(42), f'<Exception: {e}>')
 		else:
 			print('%4x:' % (p + code_offset), hex(code[p:p+length]).ljust(42), '<disassembly failed>')
 
