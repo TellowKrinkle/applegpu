@@ -3718,7 +3718,7 @@ class BitOpMovInstructionDesc(BitOpInstructionBase):
 	def __init__(self):
 		super().__init__(name='bitop_unary', size=4)
 		self.add_operand(EnumDesc('op', 16, 3, BITOPMOV_OPS))
-		self.add_operand(VariableDstDesc('D', l_off=24, u_off=26))
+		self.add_operand(VariableDstDesc('D', l_off=24, u_off=26, k_off=25))
 		self.add_operand(MovSrcDesc('A', 9, l_off=8, c_off=15, d_off=19, u_off=27))
 		self.add_operand(VariableOptionalGroupDesc('g'))
 		self.add_operand(WaitDesc('W', 29))
