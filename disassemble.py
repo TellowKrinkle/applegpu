@@ -51,6 +51,7 @@ instruction_lengths = {
 	0x10f: 10, # jmp_exec_none
 	0x00f: 10, # jmp_exec_any
 	0x0ef: 10, # stack store?
+	0x36f: 10, # used at beginning of recursive function
 	0x727: 10, # unknown, appears in round implementation
 	0x02f: 10, # floor/ceil/trunc/rint
 	0x12f: 10, # sqrt
@@ -89,7 +90,6 @@ instruction_lengths = {
 	0x647: 12, # simd_shuffle_and_fill_up
 	0x6c7: 12, # simd_shuffle_and_fill_down
 	0x06f: 12, # stack load?
-	0x36f: 12, # used at beginning of recursive function
 	0x517: 12, # ???
 	0x2df: 14, # Used before calls to visible function tables
 	0x067: 14, # device_load
