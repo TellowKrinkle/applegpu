@@ -3085,6 +3085,46 @@ class MovFromSrInstructionDesc(MaskedInstructionDesc):
 		else:
 			assert False, 'TODO'
 
+class StackSrcDesc(OperandDesc):
+	def __init__(self, name):
+		super().__init__(name)
+		self.add_merged_field(self.name, [
+			(9,  6, self.name), # TODO: 16-bit registers?
+			(33, 4, self.name + 'x'),
+			(42, 2, self.name + 'h'),
+			(48, 4, self.name + 'z'),
+		])
+
+	pseudocode = '''
+	{name}(value):
+		return SpecialRegister(value)
+	'''
+	def decode(self, fields):
+		return StackReg32(fields[self.name])
+
+	def encode_string(self, fields, opstr):
+		reg = try_parse_register(opstr)
+		if reg and (isinstance(reg, StackReg16) or isinstance(reg, StackReg32)):
+			fields[self.name] = reg.n
+		else:
+			raise Exception('invalid StackSrcDesc %r' % (opstr,))
+
+@register
+class MovFromStackInstructionDesc(MaskedInstructionDesc):
+	documentation_name = 'Move From Stack'
+	def __init__(self):
+		super().__init__('get_stack', size=(4, 8))
+		self.add_constant(0, 3, 0b100)
+		self.add_constant(15, 1, 1)
+		self.add_constant(20, 1, 0)
+		self.add_unsure_constant(24, 2, 0b11)
+		self.add_unsure_constant(19, 1, 1)
+		self.add_operand(ImmediateDesc('g', 29, 3))
+		self.add_operand(VariableDstDesc('D', l_off=18, h_off=60))
+		self.add_operand(StackSrcDesc('A'))
+		self.add_operand(WaitDesc('W', 45, 61)) # TODO: Apple compiler always uses group 0, Wmh is just a guess
+		self.add_operand(ImmediateDesc('q0', 25, 2))
+
 class DeviceLoadStoreInstructionDesc(MaskedInstructionDesc):
 	def __init__(self, name, is_load, high_base):
 		super().__init__(name, size=14)
