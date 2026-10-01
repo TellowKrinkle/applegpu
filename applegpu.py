@@ -307,6 +307,20 @@ class StackReg32(BaseUReg):
 	def get_bit_size(self):
 		return 32
 
+# This probably is just "don't care" bits but at least on M3 this is what the hardware does
+class StackReg32Swapped(BaseUReg):
+	def __str__(self):
+		return _add_flags(f'st{self.n}hl', self.flags)
+
+	def __repr__(self):
+		return self._repr('StackReg32Swapped')
+
+	def get_thread(self, corestate, thread):
+		raise Exception('Unimplemented stack register read')
+
+	def get_bit_size(self):
+		return 32
+
 class SReg32(Register):
 	def __str__(self):
 		name = 'sr%d' % (self.n)
@@ -407,6 +421,8 @@ def try_parse_gpr_ureg(s):
 	else:
 		lh = None
 	if s.startswith('st'):
+		if s[-1] == 'h' and lh == 'l':
+			return (StackReg32Swapped, int(s[2:-1], 10))
 		prefix_len = 2
 		types = (StackReg16, StackReg32)
 	elif s.startswith('r'):
@@ -3089,7 +3105,7 @@ class StackSrcDesc(OperandDesc):
 	def __init__(self, name):
 		super().__init__(name)
 		self.add_merged_field(self.name, [
-			(9,  6, self.name), # TODO: 16-bit registers?
+			(8,  7, self.name),
 			(33, 4, self.name + 'x'),
 			(42, 2, self.name + 'h'),
 			(48, 4, self.name + 'z'),
@@ -3100,12 +3116,20 @@ class StackSrcDesc(OperandDesc):
 		return SpecialRegister(value)
 	'''
 	def decode(self, fields):
-		return StackReg32(fields[self.name])
+		value = fields[self.name]
+		if fields['Ds']:
+			return StackReg32Swapped(value >> 1) if value & 1 else StackReg32(value >> 1)
+		return StackReg16(fields[self.name])
 
 	def encode_string(self, fields, opstr):
 		reg = try_parse_register(opstr)
-		if reg and (isinstance(reg, StackReg16) or isinstance(reg, StackReg32)):
-			fields[self.name] = reg.n
+		if reg and (isinstance(reg, StackReg16) or isinstance(reg, StackReg32) or isinstance(reg, StackReg32Swapped)):
+			value = reg.n
+			if isinstance(reg, StackReg32):
+				value <<= 1
+			elif isinstance(reg, StackReg32Swapped):
+				value = (value << 1) + 1
+			fields[self.name] = value
 		else:
 			raise Exception('invalid StackSrcDesc %r' % (opstr,))
 
