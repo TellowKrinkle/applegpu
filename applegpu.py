@@ -5993,6 +5993,15 @@ class WhileInstructionDesc(ExecMaskInstructionDesc):
 		self.add_operand(ImmediateDesc('n', 24, 2))
 
 @register
+class BreakInstructionDesc(ExecMaskInstructionDesc):
+	def __init__(self):
+		super().__init__('break', size=6)
+		self.add_constant(0, 12, 0x58f)
+		self.add_unsure_constant(18, 5, 0b10101)
+		self.add_operand(CCSrcDesc('A', off=40, inv_off=43))
+		self.add_operand(ImmediateDesc('n', 24, 16))
+
+@register
 class PopExecInstructionDesc(ExecMaskInstructionDesc):
 	def __init__(self):
 		super().__init__('pop_exec', size=6)

@@ -14,6 +14,7 @@ instruction_lengths = {
 	0x157:  6, # jmp_exec_none
 	0x20f:  6, # call register?
 	0x2ef:  6, # used in recursive functions
+	0x58f:  6, # break
 	0x60f:  6, # pop_exec
 	0x007:  8, # used in recursive functions
 	0x417:  8, # unpack unorm/snorm
