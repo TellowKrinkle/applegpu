@@ -3087,8 +3087,9 @@ class MovFromSrInstructionDesc(MaskedInstructionDesc):
 		super().__init__('get_sr', size=(4, 8))
 		self.add_constant(0, 3, 0b100)
 		self.add_constant(15, 1, 1)
+		self.add_constant(17, 1, 0)
 		self.add_constant(20, 1, 1)
-		self.add_unsure_constant(24, 4, 0b0110)
+		self.add_constant(25, 2, 3)
 		self.add_operand(ImmediateDesc('g', 29, 3))
 		self.add_operand(VariableDstDesc('D', l_off=18, h_off=60))
 		self.add_operand(SReg32Desc('SR'))
@@ -3112,16 +3113,19 @@ class StackSrcDesc(OperandDesc):
 			(42, 2, self.name + 'h'),
 			(48, 4, self.name + 'z'),
 		])
+		self.add_field(19, 1, self.name + 'd')
 
-	pseudocode = '''
-	{name}(value):
-		return SpecialRegister(value)
-	'''
 	def decode(self, fields):
 		value = fields[self.name]
 		if fields['Ds']:
-			return StackReg32Swapped(value >> 1) if value & 1 else StackReg32(value >> 1)
-		return StackReg16(fields[self.name])
+			reg = StackReg32Swapped(value >> 1) if value & 1 else StackReg32(value >> 1)
+		else:
+			reg = StackReg16(fields[self.name])
+
+		if fields[self.name + 'd']:
+			reg.flags.append(DISCARD_FLAG)
+
+		return reg
 
 	def encode_string(self, fields, opstr):
 		reg = try_parse_register(opstr)
@@ -3132,6 +3136,7 @@ class StackSrcDesc(OperandDesc):
 			elif isinstance(reg, StackReg32Swapped):
 				value = (value << 1) + 1
 			fields[self.name] = value
+			fields[self.name + 'd'] = DISCARD_FLAG in reg.flags
 		else:
 			raise Exception('invalid StackSrcDesc %r' % (opstr,))
 
@@ -3142,14 +3147,17 @@ class MovFromStackInstructionDesc(MaskedInstructionDesc):
 		super().__init__('get_stack', size=(4, 8))
 		self.add_constant(0, 3, 0b100)
 		self.add_constant(15, 1, 1)
-		self.add_constant(20, 1, 0)
+		self.add_constant(17, 1, 0)
 		self.add_unsure_constant(24, 2, 0b11)
-		self.add_unsure_constant(19, 1, 1)
 		self.add_operand(ImmediateDesc('g', 29, 3))
+		# Apple compiler often sets q = g but sometimes it sets something else...
+		self.add_operand(ImmediateDesc('q', [
+			(20, 1, 'q0'),
+			(25, 2, 'q1'),
+		]))
 		self.add_operand(VariableDstDesc('D', l_off=18, h_off=60))
 		self.add_operand(StackSrcDesc('A'))
-		self.add_operand(WaitDesc('W', 45, 61)) # TODO: Apple compiler always uses group 0, Wmh is just a guess
-		self.add_operand(ImmediateDesc('q0', 25, 2))
+		self.add_operand(WaitDesc('W', 45, 61))
 
 class DeviceLoadStoreInstructionDesc(MaskedInstructionDesc):
 	def __init__(self, name, is_load, high_base):
@@ -3785,7 +3793,7 @@ class BitOpMovInstructionDesc(BitOpInstructionBase):
 		super().__init__(name='bitop_unary', size=4)
 		self.add_operand(EnumDesc('op', 16, 3, BITOPMOV_OPS))
 		self.add_operand(VariableDstDesc('D', l_off=24, u_off=26, k_off=25))
-		self.add_operand(MovSrcDesc('A', 9, l_off=8, c_off=15, d_off=19, u_off=27))
+		self.add_operand(MovSrcDesc('A', 9, l_off=8, c_off=15, d_off=19, u_off=27, h_off=28))
 		self.add_operand(VariableOptionalGroupDesc('g'))
 		self.add_operand(WaitDesc('W', 29))
 
@@ -4661,7 +4669,7 @@ class FFMA8InstructionDesc(EncodeWmAsWHelper, FMAInstructionDescBase):
 		self.add_constant(18, 1, 0b1) # 'L'
 		self.add_constant(32, 2, 0b01)
 
-		self.add_operand(VariableDstDesc('D', l_off=50, h_off=60, u_off=54))
+		self.add_operand(VariableDstDesc('D', l_off=50, h_off=60, u_off=54, k_off=53))
 		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A'))
 		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', n_off=59))
 		self.add_operand(NewFloatSrcDesc('C', 41, common_layout='C', s_off=49, b_off=34))
@@ -4676,7 +4684,7 @@ class FFMA10InstructionDesc(FMAInstructionDescBase):
 		self.add_constant(18, 1, 0b1) # 'L'
 		self.add_constant(33, 1, 0b1)
 
-		self.add_operand(VariableDstDesc('D', l_off=50, h_off=60, j_off=66, u_off=54, b_off=70))
+		self.add_operand(VariableDstDesc('D', l_off=50, h_off=60, j_off=66, u_off=54, k_off=53, b_off=70))
 		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', a_off=80, b_off=71, n_off=65))
 		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', a_off=81, b_off=72, n_off=59))
 		self.add_operand(NewFloatSrcDesc('C', 41, common_layout='C', s_off=49, b_off=34))
@@ -4751,7 +4759,7 @@ class FMulAdd6InstructionDescBase(EncodeWmAsWHelper, FMAInstructionDescBase):
 		self.add_constant(18, 1, 0b1) # 'L'
 		self.add_constant(32, 2, 0b00)
 
-		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38))
+		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38, k_off=37))
 		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', l_off=35))
 		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', l_off=36, n_off=43))
 
@@ -4766,7 +4774,7 @@ class FMulAdd8InstructionDescBase(FMAInstructionDescBase):
 		self.add_constant(18, 1, 0b1) # 'L'
 		self.add_constant(32, 2, 0b01)
 
-		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38, j_off=50, b_off=54))
+		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38, k_off=37, j_off=50, b_off=54))
 		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', l_off=35, n_off=49, b_off=55))
 		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', l_off=36, n_off=43, b_off=56))
 
@@ -4782,7 +4790,7 @@ class FMulAdd10InstructionDescBase(FMAInstructionDescBase):
 		self.add_constant(18, 1, 0b1) # 'L'
 		self.add_constant(32, 2, 0b10)
 
-		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38, j_off=50, b_off=54))
+		self.add_operand(VariableDstDesc('D', l_off=34, h_off=44, u_off=38, k_off=37, j_off=50, b_off=54))
 		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', l_off=35, n_off=49, b_off=55, a_off=64))
 		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', l_off=36, n_off=43, b_off=56, a_off=65))
 
