@@ -713,7 +713,9 @@ class InstructionDesc:
 
 		if self.sizes[0] != self.sizes[1]:
 			encoded &= ~(1 << self.length_bit_pos)
-			if (encoded & (0xFFFF << (self.sizes[0] * 8))) != 0:
+			mask  =  ((1 << (self.sizes[1] * 8)) - 1)
+			mask &= ~((1 << (self.sizes[0] * 8)) - 1)
+			if (encoded & mask) != 0:
 				# use long encoding
 				encoded |= (1 << self.length_bit_pos)
 
