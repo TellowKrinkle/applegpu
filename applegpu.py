@@ -307,6 +307,19 @@ class StackReg32(BaseUReg):
 	def get_bit_size(self):
 		return 32
 
+class StackReg64(BaseUReg):
+	def __str__(self):
+		return _add_flags(f'st{self.n}_st{self.n+1}', self.flags)
+
+	def __repr__(self):
+		return self._repr('StackReg64')
+
+	def get_thread(self, corestate, thread):
+		raise Exception('Unimplemented stack register read')
+
+	def get_bit_size(self):
+		return 64
+
 # This probably is just "don't care" bits but at least on M3 this is what the hardware does
 class StackReg32Swapped(BaseUReg):
 	def __str__(self):
@@ -424,7 +437,7 @@ def try_parse_gpr_ureg(s):
 		if s[-1] == 'h' and lh == 'l':
 			return (StackReg32Swapped, int(s[2:-1], 10))
 		prefix_len = 2
-		types = (StackReg16, StackReg32)
+		types = (StackReg16, StackReg32, StackReg64)
 	elif s.startswith('r'):
 		prefix_len = 1
 		types = (Reg16, Reg32, Reg64)
@@ -3336,7 +3349,7 @@ class TextureLoadInstructionDesc(TextureLoadSampleBaseInstructionDesc):
 
 # Helper superclass for dsts in fixed-length instructions
 class FixedDstDesc(AbstractDstOperandDesc):
-	def __init__(self, name, r_off=None, s_off=None, s_size=1, i_off=None, t_off=None, v_off=None, w_off=None):
+	def __init__(self, name, r_off=None, s_off=None, s_size=1, i_off=None, t_off=None, k_off=None, w_off=None, cr_sets_x3=False):
 		super().__init__(name)
 
 		# destination bits
@@ -3352,20 +3365,20 @@ class FixedDstDesc(AbstractDstOperandDesc):
 
 		if r_off is not None:
 			self.add_field(r_off, 1, self.name + 'r') # 1 = GPR, 0 = UReg
+			self.add_field(r_off + 1, 7, self.name + 'x')
 		else:
 			self.add_implicit_field(self.name + 'r', 1)
 		if t_off is not None:
-			self.add_field(t_off, 1, self.name + 't') # 1 = GPR, 0 = Coord
-			self.add_field(v_off, 1, self.name + 'v') # Must be set to ~t
+			self.add_field(t_off, 1, self.name + 't') # 1 = GPR, 0 = Coord or Stack
+			self.add_field(k_off, 1, self.name + 'k') # 1 = GPR, 0 = Stack
 		else:
 			self.add_implicit_field(self.name + 't', 1)
-		self.has_w = w_off is not None
-		if self.has_w:
-			self.add_field(w_off, 1, self.name + 'w') # Set to ~t by Apple compiler, but doesn't seem to do anything if unset
 		if s_off is not None:
 			self.add_field(s_off, s_size, self.name + 's') # size: 0 = 16-bit, 1 = 32-bit, 2 = 64-bit
 		if i_off is not None:
 			self.add_field(i_off, 1, self.name + 'i')
+
+		self.cr_sets_x3 = cr_sets_x3
 
 	def has_l(self):
 		return True
@@ -3384,8 +3397,10 @@ class FixedDstDesc(AbstractDstOperandDesc):
 
 	def decode(self, fields):
 		value = fields[self.name] << self.value_shift()
+		value |= fields.get(self.name + 'x', 0) << 10
 		uniform_bit = not fields.get(self.name + 'r', 1) # is not uniform
-		coord_bit = not fields.get(self.name + 't', 1) # is not texture coord
+		coord_bit = not fields.get(self.name + 't', 1) # is not texture coord or stack
+		stack_bit = not fields.get(self.name + 'k', 1) # is not stack
 		reg_size = self.get_size(fields)
 		reg_count = self.get_count(fields)
 		cache_bit = fields[self.name + 'c']
@@ -3395,18 +3410,26 @@ class FixedDstDesc(AbstractDstOperandDesc):
 			value &= ~1 # All known uses of register tuples in ALU instructions still require 32-bit alignment
 
 		if coord_bit:
-			r = CoordReg(value >> 1)
+			value |= cache_bit << 8
+			value |= (not uniform_bit) << 9
+			if stack_bit:
+				if reg_size == 0:
+					r = StackReg16(value)
+				elif reg_size == 1:
+					r = StackReg32(value >> 1)
+				else:
+					r = StackReg64(value >> 1)
+			else:
+				if self.cr_sets_x3:
+					if not value & (1 << 13):
+						raise Exception(f"Expected {self.name}x bit 3 to be set but got {value}")
+					value &= ~(1 << 13)
+				r = CoordReg(value >> 1)
 		elif uniform_bit:
 			value |= cache_bit << 8
 			r = register_from_fields(value, size_bits=reg_size, uniform=uniform_bit, count=reg_count)
 		else:
 			r = register_from_fields(value, size_bits=reg_size, uniform=uniform_bit, count=reg_count, cache=cache_bit)
-
-		# TODO: What actually are v and w?
-		if bool(fields.get(self.name + 'v', 0)) != coord_bit:
-			return f"<{self.name}v doesn't match {self.name}t>"
-		if self.has_w and bool(fields.get(self.name + 'w', 0)) != coord_bit:
-			return f"<{self.name}w doesn't match {self.name}t>"
 
 		if self.is_float():
 			if reg_size == 0 and not i_bit:
@@ -3421,26 +3444,44 @@ class FixedDstDesc(AbstractDstOperandDesc):
 		r16 = isinstance(reg, Reg16)
 		r32 = isinstance(reg, Reg32)
 		r64 = isinstance(reg, Reg64)
+		s16 = isinstance(reg, StackReg16)
+		s32 = isinstance(reg, StackReg32)
+		s64 = isinstance(reg, StackReg64)
 		cr  = isinstance(reg, CoordReg)
+		st  = s16 or s32 or s64
 		r = r16 or r32 or r64
 		s = 0
-		if u32 or r32:
+		x = 0
+		c = CACHE_FLAG in reg.flags
+		if u32 or r32 or s32:
 			s = 1
-		elif u64 or r64:
+		elif u64 or r64 or s64:
 			s = 2
 
 		value = reg.n
 		if s or cr:
 			value <<= 1
+		if not r:
+			if c:
+				raise Exception(f"Register {reg} can't be cached")
+			if st:
+				c = (value >> 8) & 1
+				r = (value >> 9) & 1
+				x = value >> 10
+			else:
+				c = value >> 8
+			if self.cr_sets_x3 and cr:
+				x = 8
+			value &= 0xff
 		if not self.has_l() and (value & 1):
 			raise Exception(f'Register {reg} must be 32-bit aligned')
 		fields[self.name] = value >> self.value_shift()
-		fields[self.name + 'c'] = CACHE_FLAG in reg.flags
+		fields[self.name + 'c'] = c
 		fields[self.name + 'r'] = r
 		fields[self.name + 's'] = s
-		fields[self.name + 't'] = not cr
-		fields[self.name + 'v'] = cr
-		fields[self.name + 'w'] = self.has_w and cr
+		fields[self.name + 't'] = not (cr or st)
+		fields[self.name + 'k'] = cr
+		fields[self.name + 'x'] = x
 		if self.is_float():
 			fields[self.name + 'i'] = BFLOAT_FLAG not in reg.flags and s == 0
 
@@ -4048,7 +4089,7 @@ class ALUUnaryOpBase(MaskedInstructionDesc):
 	def __init__(self, name, opcode):
 		super().__init__(name, size=8)
 		self.add_constant(0, 12, opcode)
-		self.add_operand(FixedDstDesc('D', s_off=50, r_off=33, t_off=54, v_off=57))
+		self.add_operand(FixedDstDesc('D', s_off=50, r_off=33, t_off=54, k_off=57))
 		self.add_operand(FixedSrcDesc('A', 41, s_off=51, d_off=52, r_off=58))
 		self.add_operand(FixedOptionalGroupDesc('g', 53))
 		self.add_operand(WaitDesc('W', lo=12, hi=15))
@@ -4077,7 +4118,7 @@ class BaseShiftInstructionDesc(MaskedInstructionDesc):
 	def __init__(self, name, opcode):
 		super().__init__(name, size=10)
 		self.add_constant(0, 12, opcode)
-		self.add_operand(FixedDstDesc('D', s_off=59, r_off=33, t_off=65, v_off=68))
+		self.add_operand(FixedDstDesc('D', s_off=59, r_off=33, t_off=65, k_off=68))
 		self.add_operand(FixedSrcDesc('A', 41, s_off=60, d_off=62, r_off=69, sx_off=70))
 		self.add_operand(FixedSrcDesc('B', 50, s_off=61, d_off=63, r_off=71))
 		self.add_operand(FixedOptionalGroupDesc('g', 64))
@@ -4112,7 +4153,7 @@ class BaseBitfieldInstructionDesc(MaskedInstructionDesc):
 	def __init__(self, name, opcode):
 		super().__init__(name, size=12)
 		self.add_constant(0, 12, opcode)
-		self.add_operand(FixedDstDesc('D', s_off=68, r_off=33, t_off=76, v_off=79))
+		self.add_operand(FixedDstDesc('D', s_off=68, r_off=33, t_off=76, k_off=79))
 		# Note: M3 puts what was the first field in M1 (e.g. bfi/bfeil target, extr low register) last.
 		#       To keep a more reasonable operand order, we reorder the fields here to undo that.
 		self.add_operand(FixedSrcDesc('A', 59, s_off=71, d_off=74, r_off=83))
@@ -4355,7 +4396,7 @@ class IAddSubInstructionDesc(IAddInstructionDescBase):
 		self.add_field(20, 1, 'q1')
 		self.add_field(22, 1, 'q2')
 
-		self.add_operand(FixedDstDesc('D', r_off=33, s_off=59, t_off=68, v_off=71, w_off=37, s_size=2))
+		self.add_operand(FixedDstDesc('D', r_off=33, s_off=59, t_off=68, k_off=71, s_size=2, cr_sets_x3=True))
 
 		if is_64:
 			self.add_constant(59, 2, 0b10)
@@ -4509,7 +4550,7 @@ class IMAddSubInstructionDesc(IAddInstructionDescBase):
 		self.add_field(20, 1, 'q1')
 		self.add_field(22, 1, 'q2')
 
-		self.add_operand(FixedDstDesc('D', r_off=33, s_off=68, t_off=77, v_off=80, s_size=2))
+		self.add_operand(FixedDstDesc('D', r_off=33, s_off=68, t_off=77, k_off=80, s_size=2))
 
 		self.add_operand(NewALUSrcDesc('A', bit_off=41, s_off=70, d_off=73, r_off=81, s_size=1))
 		self.add_operand(NewALUSrcDesc('B', bit_off=50, s_off=71, d_off=74, r_off=83, s_size=1))
@@ -4896,7 +4937,7 @@ class FUnaryInstructionDesc(MaskedInstructionDesc):
 	def __init__(self, name, op):
 		super().__init__(name, size=10)
 		self.add_constant(0, 12, op)
-		self.add_operand(FUnaryDstDesc('D', s_off=61, r_off=33, i_off=50, t_off=55, v_off=59))
+		self.add_operand(FUnaryDstDesc('D', s_off=61, r_off=33, i_off=50, t_off=55, k_off=59))
 		self.add_operand(FixedFloatSrcDesc('A', 41, i_off=51, s_off=52, d_off=53, r_off=62, a_off=63, n_off=64))
 		self.add_operand(FixedOptionalGroupDesc('g', 54))
 		self.add_operand(WaitDesc('W', lo=12, hi=15))
@@ -5267,7 +5308,7 @@ class ReciprocalInstructionDesc(MaskedInstructionDesc):
 	def __init__(self):
 		super().__init__('rcp', size=10)
 		self.add_constant(0, 12, 0x0AF)
-		self.add_operand(FUnaryDstDesc('D', s_off=68, r_off=33, i_off=57, t_off=62, v_off=66))
+		self.add_operand(FUnaryDstDesc('D', s_off=68, r_off=33, i_off=57, t_off=62, k_off=66))
 		self.add_operand(FixedFloatSrcDesc('A', 41, i_off=58, s_off=59, d_off=52, r_off=69, a_off=70, n_off=71))
 		self.add_operand(FixedOptionalGroupDesc('g', 61))
 		self.add_operand(WaitDesc('W', lo=12, hi=15))
@@ -6072,7 +6113,7 @@ class ConvertF2IInstructionDesc(MaskedInstructionDesc):
 		super().__init__('convert', size=10)
 		self.add_constant(0, 12, 0x727)
 		self.add_operand(EnumDesc('mode', 62, 3, self.mode))
-		self.add_operand(FixedDstDesc('D', s_off=50, r_off=33, t_off=55, v_off=58))
+		self.add_operand(FixedDstDesc('D', s_off=50, r_off=33, t_off=55, k_off=58))
 		# Note: Apple compiler does not generate bfloat, abs, or neg, but all seem to be there in hw testing
 		self.add_operand(FixedFloatSrcDesc('A', 41, i_off=51, s_off=52, d_off=53, r_off=59, a_off=60, n_off=61))
 		self.add_operand(FixedOptionalGroupDesc('g', 54))
@@ -6133,7 +6174,7 @@ class ConvertI2FInstructionDesc(MaskedInstructionDesc):
 			# But it's easier for disassembly to call it part of the mode enum
 			(62, 1, 'mh'),
 		]))
-		self.add_operand(FixedDstDesc('D', s_off=50, r_off=33, t_off=55, v_off=59))
+		self.add_operand(FixedDstDesc('D', s_off=50, r_off=33, t_off=55, k_off=59))
 		self.add_operand(FixedSrcDesc('A', 41, s_off=51, d_off=53, r_off=61))
 		self.add_operand(EnumDesc('rnd', 60, 1, {
 			0: 'rte',
@@ -6557,7 +6598,7 @@ class BaseICmpBallotInstruction(MaskedInstructionDesc):
 		super().__init__(name, size=10)
 		self.add_constant(0, 12, op)
 		self.add_operand(EnumDesc('cc', 73, 4, ICMP_BALLOT_CC))
-		self.add_operand(FixedDstDesc('D', r_off=33, s_off=59, t_off=65, v_off=68))
+		self.add_operand(FixedDstDesc('D', r_off=33, s_off=59, t_off=65, k_off=68))
 		self.add_operand(FixedSrcDesc('A', 41, s_off=60, d_off=62, r_off=69, sx_off=70))
 		self.add_operand(FixedSrcDesc('B', 50, s_off=61, d_off=63, r_off=71, sx_off=72))
 		self.add_operand(FixedOptionalGroupDesc('g', 64))
@@ -6594,7 +6635,7 @@ class BaseFCmpBallotInstruction(MaskedInstructionDesc):
 		super().__init__(name, size=12)
 		self.add_constant(0, 12, op)
 		self.add_operand(EnumDesc('cc', 77, 4, FCMP_BALLOT_CC))
-		self.add_operand(FixedDstDesc('D', r_off=33, s_off=59, t_off=67, v_off=70))
+		self.add_operand(FixedDstDesc('D', r_off=33, s_off=59, t_off=67, k_off=70))
 		self.add_operand(FixedFloatSrcDesc('A', 41, i_off=60, s_off=61, d_off=64, r_off=71, a_off=72, n_off=73))
 		self.add_operand(FixedFloatSrcDesc('B', 50, i_off=62, s_off=63, d_off=65, r_off=74, a_off=75, n_off=76))
 		self.add_operand(FixedOptionalGroupDesc('g', 66))
@@ -6619,7 +6660,7 @@ class BaseSIMDShuffleInstruction(MaskedInstructionDesc):
 	def __init__(self, name, op):
 		super().__init__(name, size=10)
 		self.add_constant(0, 12, op)
-		self.add_operand(FixedDstDesc('D', r_off=33, s_off=58, t_off=61, v_off=64))
+		self.add_operand(FixedDstDesc('D', r_off=33, s_off=58, t_off=61, k_off=64))
 		self.add_operand(ShuffleSrcDesc('A', 41, s_off=59, c_off=65, d_off=66))
 		self.add_operand(ShuffleIndexSrcDesc('B', 49, d_off=67, r_off=68))
 		self.add_operand(FixedOptionalGroupDesc('g', 60))
@@ -6710,7 +6751,7 @@ class BaseSIMDShuffleAndFillInstruction(MaskedInstructionDesc):
 	def __init__(self, name, op):
 		super().__init__(name, size=12)
 		self.add_constant(0, 12, op)
-		self.add_operand(FixedDstDesc('D', r_off=33, s_off=66, t_off=68, v_off=71))
+		self.add_operand(FixedDstDesc('D', r_off=33, s_off=66, t_off=68, k_off=71))
 		self.add_operand(ShuffleSrcDesc('A', 41, c_off=72, d_off=73, s_off=81))
 		self.add_operand(ShuffleSrcDesc('B', 58, c_off=76, d_off=77))
 		self.add_operand(ShuffleIndexSrcDesc('C', 49, d_off=74, r_off=82))
