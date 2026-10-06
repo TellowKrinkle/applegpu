@@ -40,4 +40,7 @@ add_arrays(
 	output4[index.x] = q;
 	output5[index.x] = r;
 	output7[index.x] = uint4(7, tpg.z, outputp, sgidx);
+	uint stack[512];
+	stack[sgidx] = 4;
+	output7[index.x].x = stack[511];
 }
