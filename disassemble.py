@@ -17,6 +17,8 @@ instruction_lengths = {
 	0x2ef:  6, # used in recursive functions
 	0x58f:  6, # break
 	0x60f:  6, # pop_exec
+	0x287:  6, # used by fragment shaders
+	0x207:  6, # used by fragment shaders
 	0x007:  8, # used in recursive functions
 	0x417:  8, # unpack unorm/snorm
 	0x527:  8, # popcount
@@ -93,6 +95,7 @@ instruction_lengths = {
 	0x6c7: 12, # simd_shuffle_and_fill_down
 	0x06f: 12, # stack load?
 	0x517: 12, # ???
+	0x6e7: 12, # used by fragment shaders
 	0x2df: 14, # Used before calls to visible function tables
 	0x067: 14, # device_load
 	0x267: 14, # threadgroup_load
