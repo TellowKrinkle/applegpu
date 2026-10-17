@@ -4,6 +4,7 @@ import applegpu
 
 VERBOSE = False
 STOP_ON_STOP = True
+WIDE_ASM = os.getenv("WIDE", "").lower() in ("true", "1", "t")
 
 instruction_lengths = {
 	0x28f:  4, # ret
@@ -154,19 +155,21 @@ def instruction_length(code, offset):
 		size = instruction_lengths[op]
 	return size
 
-def hex(code):
-	return " ".join(f"{b:02X}" for b in code)
+def hex(code, space):
+	delim = " " if len(code) <= space else ""
+	return delim.join(f"{b:02X}" for b in code)
 
 def disassemble(code, code_offset = 0):
 	p = 0
 	end = False
 	skipping = False
+	asm_width = 20 if WIDE_ASM else 14
 	while p < len(code) and not end:
 		length = instruction_length(code, p)
 		if not length:
 			print("Unrecognized opcode")
 			while p < len(code):
-				print(hex(code[p:p+16]))
+				print(hex(code[p:p+16], space=16))
 				p += 16
 			break
 		n = applegpu.opcode_to_number(code[p:p+length])
@@ -193,15 +196,15 @@ def disassemble(code, code_offset = 0):
 						if rem:
 							fields = fields.ljust(85) + ' ' + str(rem)
 						asm += fields
-					print('%4x:' % (p + code_offset), hex(code[p:p+length]).ljust(42), asm)
+					print('%4x:' % (p + code_offset), hex(code[p:p+length], asm_width).ljust(asm_width * 3), asm)
 					if mnem == 'stop':
 						if STOP_ON_STOP:
 							end = True
 					break
 			except Exception as e:
-				print('%4x:' % (p + code_offset), hex(code[p:p+length]).ljust(42), f'<Exception: {e}>')
+				print('%4x:' % (p + code_offset), hex(code[p:p+length], asm_width).ljust(asm_width * 3), f'<Exception: {e}>')
 		else:
-			print('%4x:' % (p + code_offset), hex(code[p:p+length]).ljust(42), '<disassembly failed>')
+			print('%4x:' % (p + code_offset), hex(code[p:p+length], asm_width).ljust(asm_width * 3), '<disassembly failed>')
 
 		assert length >= 2 and length % 2 == 0
 		p += length

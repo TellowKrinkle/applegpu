@@ -3,7 +3,7 @@ import os
 
 from srgb import SRGB_TABLE
 
-MAX_OPCODE_LEN = 16
+MAX_OPCODE_LEN = 20
 
 BFLOAT_FLAG = 'bfloat'
 ABS_FLAG = 'abs'
