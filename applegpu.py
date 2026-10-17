@@ -3532,7 +3532,7 @@ class FixedSrcDesc(AbstractSrcOperandDesc):
 		return 0 if self.has_l() else 1
 
 	def get_size(self, fields):
-		return fields[self.name + 's']
+		return fields.get(self.name + 's', 0)
 
 	def get_count(self, fields):
 		return 1
@@ -4804,6 +4804,7 @@ class FMulAdd6InstructionDescBase(EncodeWmAsWHelper, FMAInstructionDescBase):
 		self.add_operand(NewFloatSrcDesc('A',  9, common_layout='A', l_off=35))
 		self.add_operand(NewFloatSrcDesc('B', 25, common_layout='B', l_off=36, n_off=43))
 
+		self.add_operand(VariableOptionalGroupDesc('g'))
 		self.add_operand(WaitDesc('W', 45))
 
 class FMulAdd8InstructionDescBase(FMAInstructionDescBase):
@@ -6525,6 +6526,133 @@ class PackFloatInstructionDesc(MaskedInstructionDesc):
 			if str(operands[5]) == '0.0':
 				del operands[5]
 		return operands
+
+# Ops:
+# - offset: (x & 0xf) << 12, offsetl without shift
+# - bias:   f16_to_q5.6(x)
+# - ibias:  s16_to_q5.6(x)
+# - minlod: f16_to_uq4.6(x)
+# - min3:   umin(x, 3) << 12, min3l without shift
+# - min5:   umin(x, 5) << 12, min5l without shift
+# - min7ff: umin(x, 0x7ff)
+
+PACK_TWO_TEX_ARGS = {
+	0x00: 'offset_offset',
+	0x01: 'offset_offset_1',
+	0x02: 'min3_minlod',
+	0x03: 'min3_minlod_3',
+	0x04: 'min5l_bias',
+	0x05: 'min5_bias',
+	0x06: 'min5l_minlod',
+	0x07: 'min5_minlod',
+	0x08: 'minlod_bias',
+	0x09: 'min7ff_bias',
+	0x0a: 'min7ff_min5', # Both are packed into the lower 16 bits
+	0x0b: 'min7ff_minlod',
+	0x0c: 'min5l_bias_c',
+	0x0d: 'min5_bias_d',
+	0x0e: 'min5l_minlod_e',
+	0x0f: 'min5_minlod_f',
+	0x10: 'offset_offset_10',
+	0x11: 'offset_offset_11',
+	0x12: 'min3_minlod_12',
+	0x13: 'min3_minlod_13',
+	0x14: 'min5l_ibias',
+	0x15: 'min5_ibias',
+	0x16: 'min5l_ibias_16',
+	0x17: 'min5_ibias_17',
+	0x18: 'minlod_ibias',
+	0x19: 'min7ff_ibias',
+	0x1a: 'min7ff_min5_1a', # Both are packed into the lower 16 bits
+	0x1b: 'min7ff_minlod_1b',
+	0x1c: 'min5l_ibias_1c',
+	0x1d: 'min5_ibias_1d',
+	0x1e: 'min5l_ibias_1e',
+	0x1f: 'min5_ibias_1f',
+}
+PACK_TWO_TEX_ARGS_NAMES = set(PACK_TWO_TEX_ARGS.values())
+
+PACK_ONE_TEX_ARG = {
+	0x0: 'offsetl',
+	0x1: 'min5',
+	0x2: 'min5_2',
+	0x3: 'min5_3',
+	0x4: 'min7ff',
+	0x5: 'min5l',
+	0x6: 'min5l_6',
+	0x7: 'min5l_7',
+	0x8: 'offset',
+	0x9: 'offset_9',
+	0xa: '0_bias',   # result is in the upper 16 bits
+	0xb: '0_minlod', # result is in the upper 16 bits
+	0xc: 'offset_c',
+	0xd: 'offset_d',
+	0xe: '0_ibias',  # result is in the upper 16 bits
+	0xf: '0_ibias_f',# result is in the upper 16 bits
+}
+PACK_ONE_TEX_ARG_NAMES = set(PACK_ONE_TEX_ARG.values())
+
+@register
+class PackTwoTexArgsInstructionDesc(MaskedInstructionDesc):
+	documentation_begin_group = 'Texture Sampling Argument Packing'
+	documentation_name = 'Pack Two Texture Sampling Arguments'
+
+	def __init__(self):
+		super().__init__('pack_args', size=12)
+		self.add_constant(0, 12, 0x517)
+		self.add_operand(EnumDesc('mode', 82, 5, PACK_TWO_TEX_ARGS))
+		self.add_operand(FixedDstDesc('D', s_off=68, r_off=33, t_off=75, k_off=78))
+		self.add_operand(FixedSrcDesc('A', 41, d_off=71, r_off=79))
+		self.add_operand(FixedSrcDesc('B', 50, d_off=69, r_off=80))
+		self.add_operand(FixedSrcDesc('C', 59, d_off=73, r_off=81, s_off=70))
+		self.add_operand(FixedOptionalGroupDesc('g', 74))
+		self.add_operand(WaitDesc('W', lo=12, hi=15))
+		self.add_unsure_constant(18, 5, 0b10101)
+
+	def matches(self, instr):
+		# To keep our sanity, separate the one-argument and two-argument variants into separate instructions
+		if (instr & 0x100200000000000000000) == 0x000200000000000000000:
+			return False
+		return super().matches(instr)
+
+	def fields_for_mnem(self, mnem, operand_strings):
+		if self.name == mnem and operand_strings[0] in PACK_TWO_TEX_ARGS_NAMES:
+			return {}
+
+	pseudocode = '''
+	# When B is a ureg (Br=0 Bd=1), use single-argument pack_args
+	D = pack_args(mode, A, B) | C
+	'''
+
+@register
+class PackOneTexArgInstructionDesc(MaskedInstructionDesc):
+	documentation_name = 'Pack One Texture Sampling Argument'
+
+	def __init__(self):
+		super().__init__('pack_args', size=12)
+		self.add_constant(0, 12, 0x517)
+		self.add_operand(EnumDesc('mode', [
+			(52, 1, 'm0'),
+			(58, 1, 'm1'),
+			(82, 2, 'm23'),
+		], None, PACK_ONE_TEX_ARG))
+		self.add_operand(FixedDstDesc('D', s_off=68, r_off=33, t_off=75, k_off=78))
+		self.add_operand(FixedSrcDesc('A', 41, d_off=71, r_off=79))
+		self.add_operand(FixedSrcDesc('C', 59, d_off=73, r_off=81, s_off=70))
+		self.add_operand(FixedOptionalGroupDesc('g', 74))
+		self.add_operand(WaitDesc('W', lo=12, hi=15))
+		self.add_unsure_constant(18, 5, 0b10101)
+		# B is ureg (Br=0, Bd=1)
+		self.add_constant(69, 1, 1)
+		self.add_constant(80, 1, 0)
+
+	def fields_for_mnem(self, mnem, operand_strings):
+		if self.name == mnem and operand_strings[0] in PACK_ONE_TEX_ARG_NAMES:
+			return {}
+
+	pseudocode = '''
+	D = pack_args(mode, A) | C
+	'''
 
 class ShuffleSrcDesc(AbstractSrcOperandDesc):
 	def __init__(self, name, bit_off, s_off=None, c_off=None, d_off=None, r_off=None):
